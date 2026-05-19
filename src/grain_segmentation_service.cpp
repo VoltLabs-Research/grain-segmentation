@@ -88,7 +88,6 @@ json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const s
         positions.get(),
         frame.simulationCell,
         LATTICE_BCC,
-        nullptr,
         structuretypes.get(),
         std::move(preferredOrientations)
     );
@@ -232,6 +231,11 @@ json GrainSegmentationService::performGrainSegmentation(
         }
 
         // --- atoms.msgpack export (Structure Identification exposure) ---
+        // Emits the canonical per-atom envelope (id/pos/structure_id/
+        // structure_name/cluster_id) plus GrainSegmentation-specific extras:
+        // grain_id and orientation (4-component quaternion). This mirrors
+        // OVITO's GrainSegmentationEngine output which writes a
+        // `ClusterProperty` (grain id) and an `OrientationProperty` per atom.
         {
             constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
             std::vector<std::string> names(K);
@@ -254,20 +258,53 @@ json GrainSegmentationService::performGrainSegmentation(
             std::sort(structureOrder.begin(), structureOrder.end(),
                 [&](int a, int b){ return names[a] < names[b]; });
 
+            int clusteredAtoms = 0;
+            for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
+                if(grainIds[i] != 0) ++clusteredAtoms;
+            }
+
+            json structuresListing = json::array();
             json atomsByStructure;
             for(int st : structureOrder){
                 json atomsArray = json::array();
                 for(size_t atomIndex : structureAtomIndices[static_cast<size_t>(st)]){
                     const Point3& pos = frame.positions[atomIndex];
-                    atomsArray.push_back({
+                    const PtmLocalAtomState& state = ptmStates[atomIndex];
+                    const Quaternion q = state.orientation.normalized();
+                    const int grainId = grainIds[atomIndex];
+                    json atom = {
                         {"id", frame.ids[atomIndex]},
-                        {"pos", {pos.x(), pos.y(), pos.z()}}
-                    });
+                        {"pos", {pos.x(), pos.y(), pos.z()}},
+                        {"structure_id", st},
+                        {"structure_name", names[st]},
+                        {"cluster_id", grainId},
+                        {"grain_id", grainId},
+                        {"orientation", {q.x(), q.y(), q.z(), q.w()}},
+                        {"ptm_valid", state.valid}
+                    };
+                    if(state.valid){
+                        atom["rmsd"] = state.rmsd;
+                    }
+                    atomsArray.push_back(std::move(atom));
                 }
                 atomsByStructure[names[st]] = atomsArray;
+                structuresListing.push_back({
+                    {"structure_id", st},
+                    {"structure_name", names[st]},
+                    {"atom_count", static_cast<int>(structureAtomIndices[static_cast<size_t>(st)].size())}
+                });
             }
 
             json exportWrapper;
+            exportWrapper["main_listing"] = {
+                {"total_atoms", frame.natoms},
+                {"structure_count", static_cast<int>(structureOrder.size())},
+                {"clustered_atoms", clusteredAtoms},
+                {"unclustered_atoms", frame.natoms - clusteredAtoms}
+            };
+            exportWrapper["sub_listings"] = {
+                {"structures", structuresListing}
+            };
             exportWrapper["export"] = json::object();
             exportWrapper["export"]["AtomisticExporter"] = atomsByStructure;
             const std::string atomsPath = outputFile + "_atoms.msgpack";
