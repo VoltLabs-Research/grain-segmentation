@@ -1,0 +1,29 @@
+{
+  "name": "@voltlabs/grain-segmentation",
+  "version": "1.0.0",
+  "kind": "workflow",
+  "publisher": "voltlabs",
+  "description": "Identifies and segments crystalline grains based on local PTM orientations, merging grains with similar orientations.",
+  "license": "MIT",
+  "homepage": "https://github.com/voltlabs-research/grain-segmentation",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/voltlabs-research/grain-segmentation"
+  },
+  "entrypoints": {
+    "binary": "grain-segmentation-plugin.zip",
+    "workflow": "plugin.json"
+  },
+  "platforms": [
+    "linux-x86_64",
+    "darwin-arm64",
+    "windows-x86_64"
+  ],
+  "coretoolkit": "1.0.0",
+  "files": [
+    "plugin.json",
+    "scripts",
+    "bin",
+    "lib"
+  ]
+}
