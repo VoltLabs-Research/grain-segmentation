@@ -15,7 +15,7 @@
             "icon": "HiCube",
             "author": "Rodolfo Herrera",
             "license": "MIT",
-            "version": "1.0.0",
+            "version": "1.0.1",
             "homepage": "https://github.com/rodyherrera/Volterra",
             "description": "Segmenta granos cristalinos a partir de PTM local, mergeando orientaciones similares."
           }
@@ -124,12 +124,10 @@
         },
         "data": {
           "entrypoint": {
-            "type": "python-script",
-            "binary": "grain-segmentation-plugin.zip",
+            "type": "executable",
+            "binary": "grain-segmentation",
             "binaryObjectPath": "__UPLOAD_BINARY_OBJECT_PATH__",
-            "binaryFileName": "grain-segmentation-plugin.zip",
-            "entrypointScript": "scripts/grain_segmentation_plugin_wrapper.py",
-            "requirementsFile": "",
+            "binaryFileName": "grain-segmentation",
             "arguments": "{{ foreach-trajectory-dumps.currentValue.path }} {{ foreach-trajectory-dumps.outputPath }} {{ plugin-arguments.as_str }}",
             "timeout": -1
           }

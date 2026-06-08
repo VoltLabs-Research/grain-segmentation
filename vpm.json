@@ -1,6 +1,6 @@
 {
   "name": "@voltlabs/grain-segmentation",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "kind": "workflow",
   "publisher": "voltlabs",
   "description": "Identifies and segments crystalline grains based on local PTM orientations, merging grains with similar orientations.",
