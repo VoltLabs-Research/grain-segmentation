@@ -14,7 +14,7 @@ class GrainSegmentationConan(ConanFile):
         "onetbb/2021.12.0",
         "coretoolkit/1.0.0",
         "structure-identification/1.0.0",
-        "polyhedral-template-matching/1.0.0",
+        "polyhedral-template-matching/1.0.3",
         "spdlog/1.14.1",
         "nlohmann_json/3.11.3",
     )
