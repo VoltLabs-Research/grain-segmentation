@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <queue>
 #include <cmath>
+#include <numbers>
 #include <numeric>
 #include <limits>
 #include <stdexcept>
@@ -614,7 +615,7 @@ private:
         double c = 0.5 * (tr - 1.0);
         if(c > 1.0) c = 1.0;
         if(c < -1.0) c= -1.0;
-        return std::acos(c) * 180.0 / M_PI;
+        return std::acos(c) * 180.0 / std::numbers::pi_v<double>;
     }
 
     static double mapAndAccumulateMisorientationDeg(StructureType st, Quaternion& qa_sum, const Quaternion& qb_sum){
