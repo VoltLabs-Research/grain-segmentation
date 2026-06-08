@@ -295,6 +295,28 @@ json GrainSegmentationService::performGrainSegmentation(
                 });
             }
 
+            json perAtom = json::array();
+            for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
+                const int raw = structureTypes[i];
+                const int st = (0 <= raw && raw < K) ? raw : 0;
+                const PtmLocalAtomState& state = ptmStates[i];
+                const Quaternion q = state.orientation.normalized();
+                const int grainId = grainIds[i];
+                json p = {
+                    {"id", frame.ids[i]},
+                    {"structure_id", st},
+                    {"structure_name", names[st]},
+                    {"cluster_id", grainId},
+                    {"grain_id", grainId},
+                    {"orientation", {q.x(), q.y(), q.z(), q.w()}},
+                    {"ptm_valid", state.valid}
+                };
+                if(state.valid){
+                    p["rmsd"] = state.rmsd;
+                }
+                perAtom.push_back(std::move(p));
+            }
+
             json exportWrapper;
             exportWrapper["main_listing"] = {
                 {"total_atoms", frame.natoms},
@@ -305,6 +327,7 @@ json GrainSegmentationService::performGrainSegmentation(
             exportWrapper["sub_listings"] = {
                 {"structures", structuresListing}
             };
+            exportWrapper["per-atom-properties"] = std::move(perAtom);
             exportWrapper["export"] = json::object();
             exportWrapper["export"]["AtomisticExporter"] = atomsByStructure;
             const std::string atomsPath = outputFile + "_atoms.msgpack";
