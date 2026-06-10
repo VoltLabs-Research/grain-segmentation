@@ -12,9 +12,9 @@ class GrainSegmentationConan(ConanFile):
     requires = (
         "boost/1.88.0",
         "onetbb/2021.12.0",
-        "coretoolkit/2.0.0",
-        "structure-identification/2.0.0",
-        "polyhedral-template-matching/2.0.0",
+        "coretoolkit/[>=2.0]",
+        "structure-identification/[>=2.0]",
+        "polyhedral-template-matching/[>=2.0]",
         "spdlog/1.14.1",
         "nlohmann_json/3.11.3",
     )
