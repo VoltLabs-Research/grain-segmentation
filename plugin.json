@@ -144,7 +144,7 @@
           "exposure": {
             "name": "Grain Segmentation",
             "icon": "HiCube",
-            "results": "grains.msgpack",
+            "results": "grains.parquet",
             "iterable": ""
           }
         }
@@ -160,7 +160,7 @@
           "exposure": {
             "name": "Grain Model",
             "icon": "HiCube",
-            "results": "atoms.msgpack",
+            "results": "atoms.parquet",
             "iterable": ""
           }
         }
