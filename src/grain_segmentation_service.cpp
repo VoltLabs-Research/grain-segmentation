@@ -223,14 +223,14 @@ json GrainSegmentationService::performGrainSegmentation(
         };
         result["sub_listings"] = { { "grains", grainsArray } };
 
-        const std::string msgpackPath = outputFile + "_grains.msgpack";
-        if(JsonUtils::writeJsonMsgpackToFile(result, msgpackPath, false)){
-            spdlog::info("Exported grain data to: {}", msgpackPath);
+        const std::string parquetPath = outputFile + "_grains.parquet";
+        if(JsonUtils::writeJsonToParquet(result, parquetPath, false)){
+            spdlog::info("Exported grain data to: {}", parquetPath);
         }else{
-            spdlog::warn("Could not write grains msgpack: {}", msgpackPath);
+            spdlog::warn("Could not write grains parquet: {}", parquetPath);
         }
 
-        // --- atoms.msgpack export (Structure Identification exposure) ---
+        // --- atoms.parquet export (Structure Identification exposure) ---
         // Emits the canonical per-atom envelope (id/pos/structure_id/
         // structure_name/cluster_id) plus GrainSegmentation-specific extras:
         // grain_id and orientation (4-component quaternion). This mirrors
@@ -330,11 +330,11 @@ json GrainSegmentationService::performGrainSegmentation(
             exportWrapper["per-atom-properties"] = std::move(perAtom);
             exportWrapper["export"] = json::object();
             exportWrapper["export"]["AtomisticExporter"] = atomsByStructure;
-            const std::string atomsPath = outputFile + "_atoms.msgpack";
-            if(JsonUtils::writeJsonMsgpackToFile(exportWrapper, atomsPath, false)){
+            const std::string atomsPath = outputFile + "_atoms.parquet";
+            if(JsonUtils::writeJsonToParquet(exportWrapper, atomsPath, false)){
                 spdlog::info("Exported atoms data to: {}", atomsPath);
             }else{
-                spdlog::warn("Could not write atoms msgpack: {}", atomsPath);
+                spdlog::warn("Could not write atoms parquet: {}", atomsPath);
             }
         }
 

@@ -14,7 +14,7 @@ from pathlib import Path
 BINARY_NAME = "grain-segmentation"
 PLUGIN_REPO_DIRNAME = "GrainSegmentation"
 ENV_BINARY_OVERRIDE = "VOLT_GRAIN_SEGMENTATION_BINARY"
-REQUIRED_OUTPUTS = ["_grains.msgpack", "_atoms.msgpack"]
+REQUIRED_OUTPUTS = ["_grains.parquet", "_atoms.parquet"]
 LOG_TAG = "grain-segmentation-plugin"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
