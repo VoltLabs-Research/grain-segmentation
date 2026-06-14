@@ -24,7 +24,9 @@ public:
         bool adoptOrphanAtoms,
         int minGrainAtomCount,
         bool handleCoherentInterfaces,
-        bool outputBonds
+        bool outputBonds,
+        MergeAlgorithm mergeAlgorithm,
+        double mergingThreshold
     );
 
     json compute(
@@ -39,6 +41,8 @@ private:
     int _minGrainAtomCount;
     bool _handleCoherentInterfaces;
     bool _outputBonds;
+    MergeAlgorithm _mergeAlgorithm;
+    double _mergingThreshold;
 
     json performGrainSegmentation(
         const LammpsParser::Frame &frame,

@@ -54,7 +54,9 @@ GrainSegmentationService::GrainSegmentationService()
       _adoptOrphanAtoms(true),
       _minGrainAtomCount(100),
       _handleCoherentInterfaces(true),
-      _outputBonds(false){}
+      _outputBonds(false),
+      _mergeAlgorithm(MergeAlgorithm::GraphClusteringAutomatic),
+      _mergingThreshold(0.0){}
 
 void GrainSegmentationService::setRMSD(float rmsd){
     _rmsd = rmsd;
@@ -64,15 +66,22 @@ void GrainSegmentationService::setParameters(
     bool adoptOrphanAtoms,
     int minGrainAtomCount,
     bool handleCoherentInterfaces,
-    bool outputBonds
+    bool outputBonds,
+    MergeAlgorithm mergeAlgorithm,
+    double mergingThreshold
 ){
     _adoptOrphanAtoms = adoptOrphanAtoms;
     _minGrainAtomCount = minGrainAtomCount;
     _handleCoherentInterfaces = handleCoherentInterfaces;
     _outputBonds = outputBonds;
+    _mergeAlgorithm = mergeAlgorithm;
+    _mergingThreshold = mergingThreshold;
 }
 
 json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const std::string &outputFilename){
+    if(frame.simulationCell.is2D())
+        return AnalysisResult::failure("The grain segmentation modifier does not support 2d simulation cells.");
+
     FrameAdapter::PreparedAnalysisInput prepared;
     std::string frameError;
     if(!FrameAdapter::prepareAnalysisInput(frame, prepared, &frameError))
@@ -156,6 +165,7 @@ json GrainSegmentationService::performGrainSegmentation(
             orientations,
             correspondences,
             &frame.simulationCell,
+            _mergeAlgorithm,
             _handleCoherentInterfaces,
             _outputBonds
         );
@@ -167,6 +177,7 @@ json GrainSegmentationService::performGrainSegmentation(
 
         GrainSegmentationEngine2 engine2(
             engine1,
+            _mergingThreshold,
             _adoptOrphanAtoms,
             static_cast<size_t>(_minGrainAtomCount),
             true
@@ -182,13 +193,22 @@ json GrainSegmentationService::performGrainSegmentation(
         }
 
         // Build grain center-of-mass map
-        std::map<int, Point3> grainCenters;
+        const SimulationCell& cell = frame.simulationCell;
+        std::map<int, Point3> grainReference;
+        std::map<int, Vector3> grainOffsetSum;
         std::map<int, int> grainAtomCount;
         for(int i = 0; i < frame.natoms; i++){
             int gid = grainIds[i];
-            if(i < static_cast<int>(frame.positions.size())){
-                const auto& p = frame.positions[i];
-                grainCenters[gid] = grainCenters[gid] + Vector3(p.x(), p.y(), p.z());
+            if(gid == 0) continue;
+            if(i >= static_cast<int>(frame.positions.size())) continue;
+            const Point3& p = frame.positions[i];
+            auto it = grainReference.find(gid);
+            if(it == grainReference.end()){
+                grainReference[gid] = p;
+                grainOffsetSum[gid] = Vector3(Vector3::Zero{});
+                grainAtomCount[gid] = 1;
+            }else{
+                grainOffsetSum[gid] += cell.unwrapVector(p - it->second);
                 grainAtomCount[gid]++;
             }
         }
@@ -199,6 +219,8 @@ json GrainSegmentationService::performGrainSegmentation(
             json grainInfo;
             grainInfo["id"] = grain.id;
             grainInfo["size"] = grain.size;
+            grainInfo["structure_type"] = grain.structureType;
+            grainInfo["structure_name"] = structureTypeNameForExport(grain.structureType);
             grainInfo["orientation"] = {
                 grain.orientation.x(),
                 grain.orientation.y(),
@@ -208,8 +230,9 @@ json GrainSegmentationService::performGrainSegmentation(
             // Center of mass
             if(grainAtomCount.count(grain.id) && grainAtomCount[grain.id] > 0){
                 int cnt = grainAtomCount[grain.id];
-                const auto& c = grainCenters[grain.id];
-                grainInfo["pos"] = { c.x() / cnt, c.y() / cnt, c.z() / cnt };
+                Point3 com = grainReference[grain.id] + (grainOffsetSum[grain.id] / cnt);
+                com = cell.wrapPoint(com);
+                grainInfo["pos"] = { com.x(), com.y(), com.z() };
             } else {
                 grainInfo["pos"] = {0.0, 0.0, 0.0};
             }

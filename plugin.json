@@ -15,7 +15,7 @@
             "icon": "HiCube",
             "author": "Rodolfo Herrera",
             "license": "MIT",
-            "version": "2.0.0",
+            "version": "2.0.1",
             "homepage": "https://github.com/rodyherrera/Volterra",
             "description": "Segmenta granos cristalinos a partir de PTM local, mergeando orientaciones similares."
           }
@@ -78,6 +78,34 @@
                     "label": "False"
                   }
                 ]
+              },
+              {
+                "argument": "mergeAlgorithm",
+                "type": "select",
+                "label": "Merge Algorithm",
+                "default": "GraphClusteringAutomatic",
+                "options": [
+                  {
+                    "key": "GraphClusteringAutomatic",
+                    "label": "Graph Clustering (Automatic)"
+                  },
+                  {
+                    "key": "GraphClusteringManual",
+                    "label": "Graph Clustering (Manual)"
+                  },
+                  {
+                    "key": "MinimumSpanningTree",
+                    "label": "Minimum Spanning Tree"
+                  }
+                ]
+              },
+              {
+                "argument": "mergingThreshold",
+                "type": "number",
+                "label": "Merging Threshold",
+                "default": 0,
+                "min": 0,
+                "step": 0.01
               },
               {
                 "argument": "outputBonds",
