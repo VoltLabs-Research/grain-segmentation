@@ -17,6 +17,8 @@ void showUsage(const std::string& name) {
         << "  --minGrainAtomCount <int>             Minimum atoms per grain. [default: 100]\n"
         << "  --adoptOrphanAtoms <true|false>       Adopt orphan atoms. [default: true]\n"
         << "  --handleCoherentInterfaces <true|false> Handle coherent interfaces. [default: true]\n"
+        << "  --mergeAlgorithm <name>               Merge algorithm: GraphClusteringAutomatic | GraphClusteringManual | MinimumSpanningTree. [default: GraphClusteringAutomatic]\n"
+        << "  --mergingThreshold <float>            Merge threshold (used by Manual/MST modes). [default: 0]\n"
         << "  --outputBonds                         Output neighbor bonds. [default: false]\n"
         << "  --threads <int>                       Max worker threads (TBB/OMP). [default: auto]\n";
     printHelpOption();
@@ -95,20 +97,35 @@ int main(int argc, char* argv[]) {
     int minGrainAtomCount = getInt(opts, "--minGrainAtomCount", 100);
     bool handleCoherentInterfaces = getString(opts, "--handleCoherentInterfaces", "true") == "true";
     bool outputBonds = hasOption(opts, "--outputBonds");
-    
+
+    const std::string mergeAlgorithmStr = getString(opts, "--mergeAlgorithm", "GraphClusteringAutomatic");
+    MergeAlgorithm mergeAlgorithm = MergeAlgorithm::GraphClusteringAutomatic;
+    if(mergeAlgorithmStr == "GraphClusteringManual"){
+        mergeAlgorithm = MergeAlgorithm::GraphClusteringManual;
+    }else if(mergeAlgorithmStr == "MinimumSpanningTree"){
+        mergeAlgorithm = MergeAlgorithm::MinimumSpanningTree;
+    }else if(mergeAlgorithmStr != "GraphClusteringAutomatic"){
+        spdlog::warn("Unknown mergeAlgorithm '{}', defaulting to GraphClusteringAutomatic", mergeAlgorithmStr);
+    }
+    double mergingThreshold = getDouble(opts, "--mergingThreshold", 0.0f);
+
     spdlog::info("Grain segmentation parameters:");
     spdlog::info("  - adoptOrphanAtoms: {}", adoptOrphanAtoms);
     spdlog::info("  - minGrainAtomCount: {}", minGrainAtomCount);
     spdlog::info("  - handleCoherentInterfaces: {}", handleCoherentInterfaces);
+    spdlog::info("  - mergeAlgorithm: {}", mergeAlgorithmStr);
+    spdlog::info("  - mergingThreshold: {}", mergingThreshold);
     spdlog::info("  - outputBonds: {}", outputBonds);
-    
+
     GrainSegmentationService analyzer;
     analyzer.setRMSD(getDouble(opts, "--rmsd", 0.1f));
     analyzer.setParameters(
         adoptOrphanAtoms,
         minGrainAtomCount,
         handleCoherentInterfaces,
-        outputBonds
+        outputBonds,
+        mergeAlgorithm,
+        mergingThreshold
     );
     
     spdlog::info("Starting grain segmentation...");

@@ -30,6 +30,12 @@
 
 namespace Volt{
 
+enum class MergeAlgorithm{
+    GraphClusteringAutomatic,
+    GraphClusteringManual,
+    MinimumSpanningTree
+};
+
 union NodeUnion{
     size_t opposite;
     size_t size;
@@ -505,10 +511,12 @@ public:
         std::shared_ptr<ParticleProperty> orientations,
         std::shared_ptr<ParticleProperty> correspondences,
         const SimulationCell* simCell,
+        MergeAlgorithm algorithmType,
         bool handleCoherentInterfaces,
         bool outputBonds
     )
-    : _handleBoundaries(handleCoherentInterfaces)
+    : _algorithmType(algorithmType)
+    , _handleBoundaries(handleCoherentInterfaces)
     , _numParticles(positions ? positions->size() : 0)
     , _positions(std::move(positions))
     , _structuresProperty(std::move(structures))
@@ -545,12 +553,20 @@ public:
         return _suggestedMergingThreshold;
     }
 
+    MergeAlgorithm algorithmType() const{
+        return _algorithmType;
+    }
+
     const std::shared_ptr<ParticleProperty>& structuresProperty() const{
         return _structuresProperty;
     }
 
     const std::shared_ptr<ParticleProperty>& orientationsProperty() const{
         return _orientationsProperty;
+    }
+
+    const std::vector<NeighborBond>& neighborBonds() const{
+        return _neighborBonds;
     }
 
 private:
@@ -680,6 +696,19 @@ private:
                     if(i < nb){
                         double length = std::sqrt(res[j].distanceSq);
                         out.push_back({ i, nb, std::numeric_limits<double>::infinity(), length });
+                    }
+
+                    const Vector3& neighborVector = res[j].delta;
+                    for(size_t dim = 0; dim < 3; ++dim){
+                        if(_simCell.hasPbc(dim)){
+                            if(std::abs(_simCell.inverseMatrix().prodrow(neighborVector, dim)) >= 0.5 + EPSILON){
+                                static const char* axes[3] = { "X", "Y", "Z" };
+                                throw std::runtime_error(
+                                    std::string("Simulation box is too short along cell vector ")
+                                    + std::to_string(dim + 1) + " (" + axes[dim] + ") to perform "
+                                    "grain segmentation. Please extend it first using the 'Replicate' modifier.");
+                            }
+                        }
                     }
                 }
             }
@@ -815,16 +844,17 @@ private:
         }, tbb::auto_partitioner{});
 
         tbb::parallel_sort(_neighborBonds.begin(), _neighborBonds.end(), [](const NeighborBond& x, const NeighborBond& y){
-            return x.disorientation < y.disorientation;
+            if(x.disorientation != y.disorientation) return x.disorientation < y.disorientation;
+            if(x.a != y.a) return x.a < y.a;
+            return x.b < y.b;
         });
     }
 
     double calculate_disorientation(int structureType, Quaternion& qa, const Quaternion& qb){
-        qa.normalize();
-        Quaternion qb_normalized = qb.normalized();
-        
-        double qtarget[4] = { qa.w(), qa.x(), qa.y(), qa.z() };
-        double q[4] = { qb_normalized.w(), qb_normalized.x(), qb_normalized.y(), qb_normalized.z() };
+        double qa_norm = qa.norm();
+        double qb_norm = qb.norm();
+        double qtarget[4] = { qa.w()/qa_norm, qa.x()/qa_norm, qa.y()/qa_norm, qa.z()/qa_norm };
+        double q[4] = { qb.w()/qb_norm, qb.x()/qb_norm, qb.y()/qb_norm, qb.z()/qb_norm };
 
         // TODO: DUPLICATED
         // Convert structure type back to PTM representation
@@ -849,10 +879,10 @@ private:
 
         double disorientation = (double) ptm_map_and_calculate_disorientation(type, qtarget, q);
 
-        qa.w() += q[0];
-        qa.x() += q[1];
-        qa.y() += q[2];
-        qa.z() += q[3];
+        qa.w() += q[0] * qb_norm;
+        qa.x() += q[1] * qb_norm;
+        qa.y() += q[2] * qb_norm;
+        qa.z() += q[3] * qb_norm;
 
         return disorientation;
     }
@@ -899,23 +929,46 @@ private:
         }
     }
 
+    void minimum_spanning_tree_clustering(std::vector<Quaternion>& qsum, DisjointSet& uf){
+        for(const NeighborBond& edge : _neighborBonds){
+            if(edge.disorientation < _misorientationThresholdDeg){
+                size_t pa = uf.find(edge.a);
+                size_t pb = uf.find(edge.b);
+                if(pa != pb && isCrystallineBond(edge)){
+                    size_t parent = uf.merge(pa, pb);
+                    size_t child = (parent == pa) ? pb : pa;
+                    double disorientation = calculate_disorientation(_adjustedStructureTypes[parent], qsum[parent], qsum[child]);
+                    _dendrogram.emplace_back(parent, child, edge.disorientation, disorientation, 1, qsum[parent]);
+                }
+            }
+        }
+    }
+
     void determineMergeSequence(){
         Graph graph(_numParticles, _neighborBonds.size());
-        size_t counter = 0;
-        for(auto edge : _neighborBonds){
-            if(isCrystallineBond(edge) && edge.disorientation < _misorientationThresholdDeg){
-                double weight = calculateGraphWeight(edge.disorientation);
-                graph.add_edge(edge.a, edge.b, weight);
+        if(_algorithmType == MergeAlgorithm::GraphClusteringAutomatic || _algorithmType == MergeAlgorithm::GraphClusteringManual){
+            for(auto edge : _neighborBonds){
+                if(isCrystallineBond(edge) && edge.disorientation < _misorientationThresholdDeg){
+                    double weight = calculateGraphWeight(edge.disorientation);
+                    graph.add_edge(edge.a, edge.b, weight);
+                }
             }
         }
 
         std::vector<Quaternion> qsum(_adjustedOrientations.cbegin(), _adjustedOrientations.cend());
         DisjointSet uf(_numParticles);
         _dendrogram.resize(0);
-        node_pair_sampling_clustering(graph, qsum);
 
-        std::sort(_dendrogram.begin(), _dendrogram.end(), [](const DendrogramNode& a, const DendrogramNode& b){ 
-            return a.distance < b.distance; 
+        if(_algorithmType == MergeAlgorithm::GraphClusteringAutomatic || _algorithmType == MergeAlgorithm::GraphClusteringManual){
+            node_pair_sampling_clustering(graph, qsum);
+        }else{
+            minimum_spanning_tree_clustering(qsum, uf);
+        }
+
+        std::sort(_dendrogram.begin(), _dendrogram.end(), [](const DendrogramNode& a, const DendrogramNode& b){
+            if(a.distance != b.distance) return a.distance < b.distance;
+            if(a.a != b.a) return a.a < b.a;
+            return a.b < b.b;
         });
 
         size_t numPlot = 0;
@@ -935,42 +988,44 @@ private:
             }
         }
 
-        // Create PropertyStorage objects for the output plot.
-        std::vector<double> mergeDistanceArray;
-        std::vector<double> mergeSizeArray;
-        
-        mergeDistanceArray.reserve(numPlot);
-        mergeSizeArray.reserve(numPlot);
+        if(_algorithmType == MergeAlgorithm::GraphClusteringAutomatic || _algorithmType == MergeAlgorithm::GraphClusteringManual){
+            // Create PropertyStorage objects for the output plot.
+            std::vector<double> mergeDistanceArray;
+            std::vector<double> mergeSizeArray;
 
-        // Generate output data plot points from dendrogram data.
-        for(const DendrogramNode& node : _dendrogram){
-            if(node.size >= _minPlotSize){
-                mergeDistanceArray.push_back(std::log(node.distance));
-                mergeSizeArray.push_back(node.size);
+            mergeDistanceArray.reserve(numPlot);
+            mergeSizeArray.reserve(numPlot);
+
+            // Generate output data plot points from dendrogram data.
+            for(const DendrogramNode& node : _dendrogram){
+                if(node.size >= _minPlotSize){
+                    mergeDistanceArray.push_back(std::log(node.distance));
+                    mergeSizeArray.push_back(node.size);
+                }
             }
-        }
 
-        auto regressor = Regressor(_dendrogram);
-        _suggestedMergingThreshold = regressor.calculate_threshold(_dendrogram, 1.5);
+            auto regressor = Regressor(_dendrogram);
+            _suggestedMergingThreshold = regressor.calculate_threshold(_dendrogram, 1.5);
 
-        // Create PropertyStorage objects for the output plot.
-        numPlot = 0;
-        for(auto y : regressor.ys){
-            // plot positive distances only, for clarity
-            numPlot += (y > 0) ? 1 : 0;
-        }
+            // Create PropertyStorage objects for the output plot.
+            numPlot = 0;
+            for(auto y : regressor.ys){
+                // plot positive distances only, for clarity
+                numPlot += (y > 0) ? 1 : 0;
+            }
 
-        std::vector<double> logMergeSizeArray;
-        std::vector<double> logMergeDistanceArray;
-        
-        logMergeSizeArray.reserve(numPlot);
-        logMergeDistanceArray.reserve(numPlot);
+            std::vector<double> logMergeSizeArray;
+            std::vector<double> logMergeDistanceArray;
 
-        // Generate output data plot points from dendrogram data.
-        for(size_t i = 0; i < regressor.residuals.size(); i++){
-            if(regressor.ys[i] > 0){
-                logMergeSizeArray.push_back(regressor.xs[i]);
-                logMergeDistanceArray.push_back(regressor.ys[i]);
+            logMergeSizeArray.reserve(numPlot);
+            logMergeDistanceArray.reserve(numPlot);
+
+            // Generate output data plot points from dendrogram data.
+            for(size_t i = 0; i < regressor.residuals.size(); i++){
+                if(regressor.ys[i] > 0){
+                    logMergeSizeArray.push_back(regressor.xs[i]);
+                    logMergeDistanceArray.push_back(regressor.ys[i]);
+                }
             }
         }
     }
@@ -979,6 +1034,7 @@ private:
     static constexpr double _misorientationThresholdDeg = 4.0;
     const size_t _minPlotSize = 20;
 
+    MergeAlgorithm _algorithmType;
     bool _handleBoundaries;
     size_t _numParticles;
 
@@ -1001,19 +1057,22 @@ private:
 class GrainSegmentationEngine2{
 public:
     struct GrainInfo{
-        int id; 
-        size_t size; 
-        Quaternion orientation; 
+        int id;
+        size_t size;
+        Quaternion orientation;
+        int structureType;
     };
 
     GrainSegmentationEngine2(
         std::shared_ptr<const GrainSegmentationEngine1> engine1,
+        double mergingThreshold,
         bool adoptOrphanAtoms,
         size_t minGrainAtomCount,
         bool colorParticlesByGrain
     )
     : _engine1(std::move(engine1))
     , _numParticles(_engine1 ? _engine1->structuresProperty()->size() : 0)
+    , _mergingThreshold(mergingThreshold)
     , _adoptOrphanAtoms(adoptOrphanAtoms)
     , _minGrainAtomCount(minGrainAtomCount)
     , _colorParticlesByGrain(colorParticlesByGrain)
@@ -1025,7 +1084,14 @@ public:
         if(!_engine1) return;
 
         const auto& dendro = _engine1->dendrogram();
-        double thr = _engine1->suggestedMergingThreshold();
+
+        double thr = _mergingThreshold;
+        if(_engine1->algorithmType() == MergeAlgorithm::GraphClusteringAutomatic){
+            thr = _engine1->suggestedMergingThreshold();
+        }
+        if(_engine1->algorithmType() == MergeAlgorithm::MinimumSpanningTree){
+            thr = std::log(thr);
+        }
 
         DisjointSet uf(_numParticles);
         std::vector<Quaternion> meanQ(_engine1->orientationsProperty()->size());
@@ -1047,7 +1113,11 @@ public:
         size_t nextId = 1;
         for(size_t i = 0; i < _numParticles; ++i){
             if(uf.find(i) == i){
-                rep2id[i] = (uf.nodesize(i) >= _minGrainAtomCount) ? nextId++ : 0;
+                if(uf.nodesize(i) < _minGrainAtomCount || _engine1->structuresProperty()->getInt(i) == (int)StructureType::OTHER){
+                    rep2id[i] = 0;
+                }else{
+                    rep2id[i] = nextId++;
+                }
             }
         }
 
@@ -1065,9 +1135,41 @@ public:
                 int gid = (int) rep2id[rep];
                 if(gid > 0){
                     Quaternion q = meanQ[rep].normalized();
-                    _grains.emplace_back(GrainInfo{gid, uf.nodesize(rep), q});
+                    int st = _engine1->structuresProperty()->getInt(rep);
+                    _grains.emplace_back(GrainInfo{gid, uf.nodesize(rep), q, st});
                 }
             }
+        }
+
+        if(_grainCount >= 1){
+            std::vector<size_t> mapping(_grainCount);
+            std::iota(mapping.begin(), mapping.end(), size_t(0));
+            std::sort(mapping.begin(), mapping.end(), [&](size_t a, size_t b){
+                return _grains[a].size > _grains[b].size;
+            });
+
+            std::vector<GrainInfo> reordered;
+            reordered.reserve(_grainCount);
+            for(size_t p = 0; p < _grainCount; ++p){
+                GrainInfo g = _grains[mapping[p]];
+                g.id = (int)(p + 1);
+                reordered.push_back(g);
+            }
+            _grains = std::move(reordered);
+
+            std::vector<size_t> inverseMapping(_grainCount + 1);
+            inverseMapping[0] = 0;
+            for(size_t i = 1; i <= _grainCount; ++i){
+                inverseMapping[mapping[i - 1] + 1] = i;
+            }
+
+            for(size_t i = 0; i < _numParticles; ++i){
+                size_t oldId = (size_t) _atomClusters->getInt(i);
+                _atomClusters->setInt(i, (int) inverseMapping[oldId]);
+            }
+
+            if(_adoptOrphanAtoms)
+                mergeOrphanAtoms();
         }
     }
 
@@ -1084,9 +1186,79 @@ public:
     }
 
 private:
+    struct PQNode{
+        int cluster;
+        size_t particleIndex;
+        double length;
+    };
+
+    struct PQCompareLength{
+        bool operator()(const PQNode& a, const PQNode& b) const{
+            return a.length > b.length;
+        }
+    };
+
+    void mergeOrphanAtoms(){
+        using NeighborBond = GrainSegmentationEngine1::NeighborBond;
+
+        std::vector<NeighborBond> noncrystallineBonds;
+        for(auto nb : _engine1->neighborBonds()){
+            if(_atomClusters->getInt((size_t) nb.a) == 0 || _atomClusters->getInt((size_t) nb.b) == 0){
+                noncrystallineBonds.push_back(nb);
+
+                std::swap(nb.a, nb.b);
+                noncrystallineBonds.push_back(nb);
+            }
+        }
+
+        std::sort(noncrystallineBonds.begin(), noncrystallineBonds.end(),
+            [](const NeighborBond& a, const NeighborBond& b){ return a.a < b.a; });
+
+        std::priority_queue<PQNode, std::vector<PQNode>, PQCompareLength> pq;
+
+        for(const auto& bond : _engine1->neighborBonds()){
+            int clusterA = _atomClusters->getInt((size_t) bond.a);
+            int clusterB = _atomClusters->getInt((size_t) bond.b);
+
+            if(clusterA != 0 && clusterB == 0){
+                pq.push({ clusterA, bond.b, bond.length });
+            }else if(clusterA == 0 && clusterB != 0){
+                pq.push({ clusterB, bond.a, bond.length });
+            }
+        }
+
+        while(!pq.empty()){
+            PQNode node = pq.top();
+            pq.pop();
+
+            if(_atomClusters->getInt(node.particleIndex) != 0)
+                continue;
+
+            _atomClusters->setInt(node.particleIndex, node.cluster);
+
+            if(node.cluster >= 1 && (size_t) node.cluster <= _grains.size())
+                _grains[node.cluster - 1].size++;
+
+            NeighborBond key{ node.particleIndex, 0, 0.0, 0.0 };
+            auto bondsRange = std::equal_range(noncrystallineBonds.begin(), noncrystallineBonds.end(), key,
+                [](const NeighborBond& a, const NeighborBond& b){ return a.a < b.a; });
+
+            for(auto it = bondsRange.first; it != bondsRange.second; ++it){
+                const NeighborBond& bond = *it;
+
+                size_t neighborIndex = bond.b;
+                if(neighborIndex == std::numeric_limits<size_t>::max()) break;
+                if(_atomClusters->getInt(neighborIndex) != 0) continue;
+
+                pq.push({ node.cluster, neighborIndex, node.length + bond.length });
+            }
+        }
+    }
+
     std::shared_ptr<const GrainSegmentationEngine1> _engine1;
     size_t _numParticles = 0;
 
+    double _mergingThreshold = 0.0;
     bool _adoptOrphanAtoms = false;
     size_t _minGrainAtomCount = 1;
     bool _colorParticlesByGrain = false;
