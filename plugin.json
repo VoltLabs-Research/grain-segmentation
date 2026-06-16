@@ -15,7 +15,7 @@
             "icon": "HiCube",
             "author": "Rodolfo Herrera",
             "license": "MIT",
-            "version": "2.0.2",
+            "version": "2.0.3",
             "homepage": "https://github.com/rodyherrera/Volterra",
             "description": "Segmenta granos cristalinos a partir de PTM local, mergeando orientaciones similares."
           }
