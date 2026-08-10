@@ -1,5 +1,6 @@
 #include <volt/cli/common.h>
 #include <volt/grain_segmentation_service.h>
+#include <volt/plugin/option_reader.h>
 #include <oneapi/tbb/global_control.h>
 #include <tbb/info.h>
 
@@ -9,35 +10,40 @@
 
 using namespace Volt;
 using namespace Volt::CLI;
+using namespace Volt::Plugin;
 
-void showUsage(const std::string& name) {
-    printUsageHeader(name, "Volt - Grain Segmentation");
-    std::cerr
-        << "  --rmsd <float>                        RMSD threshold for PTM. [default: 0.1]\n"
-        << "  --minGrainAtomCount <int>             Minimum atoms per grain. [default: 100]\n"
-        << "  --adoptOrphanAtoms <true|false>       Adopt orphan atoms. [default: true]\n"
-        << "  --handleCoherentInterfaces <true|false> Handle coherent interfaces. [default: true]\n"
-        << "  --mergeAlgorithm <name>               Merge algorithm: GraphClusteringAutomatic | GraphClusteringManual | MinimumSpanningTree. [default: GraphClusteringAutomatic]\n"
-        << "  --mergingThreshold <float>            Merge threshold (used by Manual/MST modes). [default: 0]\n"
-        << "  --outputBonds                         Output neighbor bonds. [default: false]\n"
-        << "  --threads <int>                       Max worker threads (TBB/OMP). [default: auto]\n";
-    printHelpOption();
+static PluginDescriptor buildDescriptor() {
+    return {
+        "grain-segmentation",
+        "Grain Segmentation",
+        {
+            {"--rmsd", "float", "RMSD threshold for PTM.", "0.1", {}, ""},
+            {"--minGrainAtomCount", "int", "Minimum atoms per grain.", "100", {}, ""},
+            {"--adoptOrphanAtoms", "bool", "Adopt orphan atoms.", "true", {}, ""},
+            {"--handleCoherentInterfaces", "bool", "Handle coherent interfaces.", "true", {}, ""},
+            {"--mergeAlgorithm", "enum", "Grain merge algorithm.", "GraphClusteringAutomatic",
+             {"GraphClusteringAutomatic", "GraphClusteringManual", "MinimumSpanningTree"}, ""},
+            {"--mergingThreshold", "float", "Merge threshold (used by Manual/MST modes).", "0", {}, ""},
+            {"--outputBonds", "bool", "Output neighbor bonds.", "false", {}, ""},
+        }
+    };
 }
 
 int main(int argc, char* argv[]) {
+    const PluginDescriptor descriptor = buildDescriptor();
+
     if (argc < 2) {
-        showUsage(argv[0]);
+        showPluginUsage(argv[0], descriptor);
         return 1;
     }
-    
+
     std::string filename, outputBase;
     auto opts = parseArgs(argc, argv, filename, outputBase);
-    
-    if (hasOption(opts, "--help") || filename.empty()) {
-        showUsage(argv[0]);
-        return filename.empty() ? 1 : 0;
+
+    if (auto exitCode = handleIntrospection(argv[0], descriptor, opts, filename)) {
+        return *exitCode;
     }
-    
+
     if (!hasOption(opts, "--threads")) {
         const int maxAvailableThreads = static_cast<int>(oneapi::tbb::info::default_concurrency());
         int physicalCores = 0;
@@ -93,12 +99,14 @@ int main(int argc, char* argv[]) {
     outputBase = deriveOutputBase(filename, outputBase);
     spdlog::info("Output base: {}", outputBase);
     
-    bool adoptOrphanAtoms = getString(opts, "--adoptOrphanAtoms", "true") == "true";
-    int minGrainAtomCount = getInt(opts, "--minGrainAtomCount", 100);
-    bool handleCoherentInterfaces = getString(opts, "--handleCoherentInterfaces", "true") == "true";
-    bool outputBonds = hasOption(opts, "--outputBonds");
+    const OptionReader options(descriptor, opts);
 
-    const std::string mergeAlgorithmStr = getString(opts, "--mergeAlgorithm", "GraphClusteringAutomatic");
+    bool adoptOrphanAtoms = options.boolean("--adoptOrphanAtoms");
+    int minGrainAtomCount = options.integer("--minGrainAtomCount");
+    bool handleCoherentInterfaces = options.boolean("--handleCoherentInterfaces");
+    bool outputBonds = options.boolean("--outputBonds");
+
+    const std::string mergeAlgorithmStr = options.text("--mergeAlgorithm");
     MergeAlgorithm mergeAlgorithm = MergeAlgorithm::GraphClusteringAutomatic;
     if(mergeAlgorithmStr == "GraphClusteringManual"){
         mergeAlgorithm = MergeAlgorithm::GraphClusteringManual;
@@ -107,7 +115,7 @@ int main(int argc, char* argv[]) {
     }else if(mergeAlgorithmStr != "GraphClusteringAutomatic"){
         spdlog::warn("Unknown mergeAlgorithm '{}', defaulting to GraphClusteringAutomatic", mergeAlgorithmStr);
     }
-    double mergingThreshold = getDouble(opts, "--mergingThreshold", 0.0f);
+    double mergingThreshold = options.number("--mergingThreshold");
 
     spdlog::info("Grain segmentation parameters:");
     spdlog::info("  - adoptOrphanAtoms: {}", adoptOrphanAtoms);
@@ -118,7 +126,7 @@ int main(int argc, char* argv[]) {
     spdlog::info("  - outputBonds: {}", outputBonds);
 
     GrainSegmentationService analyzer;
-    analyzer.setRMSD(getDouble(opts, "--rmsd", 0.1f));
+    analyzer.setRMSD(options.number("--rmsd"));
     analyzer.setParameters(
         adoptOrphanAtoms,
         minGrainAtomCount,
