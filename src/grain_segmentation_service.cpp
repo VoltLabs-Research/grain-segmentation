@@ -192,7 +192,6 @@ json GrainSegmentationService::performGrainSegmentation(
             grainIds[i] = atomClusters->getInt(i);
         }
 
-        // Build grain center-of-mass map
         const SimulationCell& cell = frame.simulationCell;
         std::map<int, Point3> grainReference;
         std::map<int, Vector3> grainOffsetSum;
@@ -213,7 +212,6 @@ json GrainSegmentationService::performGrainSegmentation(
             }
         }
 
-        // Build grains sub_listing
         json grainsArray = json::array();
         for(const auto &grain : engine2.grains()){
             json grainInfo;
@@ -227,7 +225,6 @@ json GrainSegmentationService::performGrainSegmentation(
                 grain.orientation.z(),
                 grain.orientation.w()
             };
-            // Center of mass
             if(grainAtomCount.count(grain.id) && grainAtomCount[grain.id] > 0){
                 int cnt = grainAtomCount[grain.id];
                 Point3 com = grainReference[grain.id] + (grainOffsetSum[grain.id] / cnt);
@@ -253,12 +250,6 @@ json GrainSegmentationService::performGrainSegmentation(
             spdlog::warn("Could not write grains parquet: {}", parquetPath);
         }
 
-        // --- atoms.parquet export (Structure Identification exposure) ---
-        // Emits the canonical per-atom envelope (id/pos/structure_id/
-        // structure_name/cluster_id) plus GrainSegmentation-specific extras:
-        // grain_id and orientation (4-component quaternion). This mirrors
-        // OVITO's GrainSegmentationEngine output which writes a
-        // `ClusterProperty` (grain id) and an `OrientationProperty` per atom.
         {
             constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
             std::vector<std::string> names(K);

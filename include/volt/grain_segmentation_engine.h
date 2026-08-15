@@ -69,7 +69,6 @@ inline void weightedLinearRegression(
     double& gradient,
     double& intercept
 ){
-    // Normalize weights
     double wsum = 0;
     for(auto w : weights){
         wsum += w;
@@ -79,7 +78,6 @@ inline void weightedLinearRegression(
         weights[i] /= wsum;
     }
 
-    // Calculate means
     double xmean = 0;
     double ymean = 0;
     for(size_t i = 0; i < weights.size(); i++){
@@ -87,7 +85,6 @@ inline void weightedLinearRegression(
         ymean += weights[i] * ys[i];
     }
 
-    // Calculate relevant covariance elements
     double sum_xx = 0;
     double sum_xy = 0;
     for(size_t i = 0; i < weights.size(); i++){
@@ -95,7 +92,6 @@ inline void weightedLinearRegression(
         sum_xy += weights[i] * (xs[i] - xmean) * (ys[i] - ymean);
     }
 
-    // Calculate gradient and intercept
     gradient = sum_xy / sum_xx;
     intercept = ymean - gradient * xmean;
 }
@@ -110,11 +106,9 @@ inline std::vector<double> leastAbsoluteDeviations(
     std::vector<double> residuals(weights.size());
     std::vector<double> w(weights);
 
-    // Iteratively-reweighted least squares
     for(int it = 0; it < 100; it++){
         weightedLinearRegression(w, xs, ys, gradient, intercept);
         
-        // Update residuals and weights
         for(size_t i = 0; i < xs.size(); i++){
             double prediction = gradient * xs[i] + intercept;
             double r = std::abs(ys[i] - prediction);
@@ -207,9 +201,7 @@ public:
         std::fill(sizes.begin(), sizes.end(), 1);
     }
 
-    // "Find" part of Union-Find.
     size_t find(size_t index){
-        // Find root and make root as parent of i (path compression)
         size_t x = parents[index];
         while(x != parents[x]){
             parents[x] = parents[parents[x]];
@@ -219,13 +211,11 @@ public:
         return x;
     }
 
-    // "Union" part of Union-Find.
     size_t merge(size_t index1, size_t index2){
         size_t parentA = find(index1);
         size_t parentB = find(index2);
         if(parentA == parentB) return parentA;
 
-        // Attach smaller tree under root of larger tree
         if(sizes[parentA] < sizes[parentB]){
             parents[parentA] = parentB;
             sizes[parentB] += sizes[parentA];
@@ -488,7 +478,6 @@ public:
         }
 
         double calculate_threshold(std::vector<GrainSegmentationEngine1::DendrogramNode>& dendrogram, double cutoff){
-            // Select the threshold as the inlier with the largest distance.
             double threshold = 0;
             for(auto node : dendrogram) {
                 double x = log(node.merge_size);
@@ -570,7 +559,6 @@ public:
     }
 
 private:
-    // TODO: Duplicated
     static inline Matrix3 quaternionToMatrix(const Quaternion& q){
         double w = q.w();
         double x = q.x();
@@ -719,7 +707,6 @@ private:
         });
     }
 
-    // coherent interfaces
     bool interface_cubic_hex(NeighborBond& bond, const InterfaceHandler& iface, Quaternion& outRot){
         bond.disorientation = std::numeric_limits<double>::infinity();
         if(!iface.reorder_bond(bond, _adjustedStructureTypes)){
@@ -775,7 +762,6 @@ private:
             Quaternion rotated;
             if(!interface_cubic_hex(bond, iface, rotated)) continue;
 
-            // defect 
             size_t idx = bond.b; 
             _adjustedStructureTypes[idx] = iface.parent_phase(_adjustedStructureTypes[idx]);
             _adjustedOrientations[idx]   = rotated;
@@ -795,7 +781,6 @@ private:
         }
     }
 
-    // Misorientations
     bool isCrystallineBond(const NeighborBond& b) const{
         auto a = _adjustedStructureTypes[b.a];
         auto c = _adjustedStructureTypes[b.b];
@@ -856,8 +841,6 @@ private:
         double qtarget[4] = { qa.w()/qa_norm, qa.x()/qa_norm, qa.y()/qa_norm, qa.z()/qa_norm };
         double q[4] = { qb.w()/qb_norm, qb.x()/qb_norm, qb.y()/qb_norm, qb.z()/qb_norm };
 
-        // TODO: DUPLICATED
-        // Convert structure type back to PTM representation
         int type = 0;
         if(structureType == StructureType::OTHER){
             return std::numeric_limits<double>::max();
@@ -893,7 +876,6 @@ private:
         size_t progressVal = 0;
         std::vector<size_t> chain;
         while(graph.num_nodes()){
-            // nearest-neighbor chain
             size_t node = graph.next_node();
 
             chain.push_back(node);
@@ -904,7 +886,6 @@ private:
 
                 auto [d, b] = graph.nearestNeighbor(a);
                 if(b == std::numeric_limits<size_t>::max()){
-                    // Remove the connected component
                     graph.remove_node(a);
                 }else if(!chain.empty()){
                     size_t c = chain.back();
@@ -978,7 +959,6 @@ private:
             size_t sb = uf.nodesize(uf.find(node.b));
             size_t dsize = std::min(sa, sb);
 
-            // harmonic mean
             node.merge_size = 2. / (1. / sa + 1. / sb);
             uf.merge(node.a, node.b);
 
@@ -989,14 +969,12 @@ private:
         }
 
         if(_algorithmType == MergeAlgorithm::GraphClusteringAutomatic || _algorithmType == MergeAlgorithm::GraphClusteringManual){
-            // Create PropertyStorage objects for the output plot.
             std::vector<double> mergeDistanceArray;
             std::vector<double> mergeSizeArray;
 
             mergeDistanceArray.reserve(numPlot);
             mergeSizeArray.reserve(numPlot);
 
-            // Generate output data plot points from dendrogram data.
             for(const DendrogramNode& node : _dendrogram){
                 if(node.size >= _minPlotSize){
                     mergeDistanceArray.push_back(std::log(node.distance));
@@ -1007,10 +985,8 @@ private:
             auto regressor = Regressor(_dendrogram);
             _suggestedMergingThreshold = regressor.calculate_threshold(_dendrogram, 1.5);
 
-            // Create PropertyStorage objects for the output plot.
             numPlot = 0;
             for(auto y : regressor.ys){
-                // plot positive distances only, for clarity
                 numPlot += (y > 0) ? 1 : 0;
             }
 
@@ -1020,7 +996,6 @@ private:
             logMergeSizeArray.reserve(numPlot);
             logMergeDistanceArray.reserve(numPlot);
 
-            // Generate output data plot points from dendrogram data.
             for(size_t i = 0; i < regressor.residuals.size(); i++){
                 if(regressor.ys[i] > 0){
                     logMergeSizeArray.push_back(regressor.xs[i]);
