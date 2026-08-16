@@ -12,8 +12,6 @@ namespace Volt{
 
 using namespace Volt::Particles;
 
-namespace{
-
 std::string structureTypeNameForExport(int structureType){
     switch(static_cast<StructureType>(structureType)){
         case StructureType::SC:
@@ -45,8 +43,6 @@ std::string structureTypeNameForExport(int structureType){
         default:
             return "OTHER";
     }
-}
-
 }
 
 GrainSegmentationService::GrainSegmentationService()
