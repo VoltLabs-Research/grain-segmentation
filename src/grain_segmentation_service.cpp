@@ -287,7 +287,6 @@ json GrainSegmentationService::performGrainSegmentation(
                         {"pos", {pos.x(), pos.y(), pos.z()}},
                         {"structure_id", st},
                         {"structure_name", names[st]},
-                        {"cluster_id", grainId},
                         {"grain_id", grainId},
                         {"orientation", {q.x(), q.y(), q.z(), q.w()}},
                         {"ptm_valid", state.valid}
@@ -316,7 +315,6 @@ json GrainSegmentationService::performGrainSegmentation(
                     {"id", frame.ids[i]},
                     {"structure_id", st},
                     {"structure_name", names[st]},
-                    {"cluster_id", grainId},
                     {"grain_id", grainId},
                     {"orientation", {q.x(), q.y(), q.z(), q.w()}},
                     {"ptm_valid", state.valid}
