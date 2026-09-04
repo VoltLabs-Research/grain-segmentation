@@ -240,11 +240,8 @@ json GrainSegmentationService::performGrainSegmentation(
         result["sub_listings"] = { { "grains", grainsArray } };
 
         const std::string parquetPath = outputFile + "_grains.parquet";
-        if(JsonUtils::writeJsonToParquet(result, parquetPath, false)){
-            spdlog::info("Exported grain data to: {}", parquetPath);
-        }else{
-            spdlog::warn("Could not write grains parquet: {}", parquetPath);
-        }
+        JsonUtils::writeJsonToParquet(result, parquetPath, false);
+        spdlog::info("Exported grain data to: {}", parquetPath);
 
         {
             constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
@@ -339,11 +336,8 @@ json GrainSegmentationService::performGrainSegmentation(
             exportWrapper["export"] = json::object();
             exportWrapper["export"]["AtomisticExporter"] = atomsByStructure;
             const std::string atomsPath = outputFile + "_atoms.parquet";
-            if(JsonUtils::writeJsonToParquet(exportWrapper, atomsPath, false)){
-                spdlog::info("Exported atoms data to: {}", atomsPath);
-            }else{
-                spdlog::warn("Could not write atoms parquet: {}", atomsPath);
-            }
+            JsonUtils::writeJsonToParquet(exportWrapper, atomsPath, false);
+            spdlog::info("Exported atoms data to: {}", atomsPath);
         }
 
         return result;
