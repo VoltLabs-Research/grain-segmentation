@@ -116,17 +116,17 @@ int main(int argc, char* argv[]) {
         spdlog::warn("Unknown mergeAlgorithm '{}', defaulting to GraphClusteringAutomatic", mergeAlgorithmStr);
     }
     double mergingThreshold = options.number("--mergingThreshold");
+    const double rmsd = options.number("--rmsd");
 
-    spdlog::info("Grain segmentation parameters:");
-    spdlog::info("  - adoptOrphanAtoms: {}", adoptOrphanAtoms);
-    spdlog::info("  - minGrainAtomCount: {}", minGrainAtomCount);
-    spdlog::info("  - handleCoherentInterfaces: {}", handleCoherentInterfaces);
-    spdlog::info("  - mergeAlgorithm: {}", mergeAlgorithmStr);
-    spdlog::info("  - mergingThreshold: {}", mergingThreshold);
-    spdlog::info("  - outputBonds: {}", outputBonds);
+    spdlog::info(
+        "Parameters: rmsd={}, minGrainAtomCount={}, adoptOrphanAtoms={}, handleCoherentInterfaces={}, "
+        "mergeAlgorithm={}, mergingThreshold={}, outputBonds={}",
+        rmsd, minGrainAtomCount, adoptOrphanAtoms, handleCoherentInterfaces,
+        mergeAlgorithmName(mergeAlgorithm), mergingThreshold, outputBonds
+    );
 
     GrainSegmentationService analyzer;
-    analyzer.setRMSD(options.number("--rmsd"));
+    analyzer.setRMSD(rmsd);
     analyzer.setParameters(
         adoptOrphanAtoms,
         minGrainAtomCount,
