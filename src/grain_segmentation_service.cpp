@@ -168,7 +168,11 @@ json GrainSegmentationService::performGrainSegmentation(
 
         engine1->perform();
 
-        spdlog::info("GrainSegmentationEngine1 complete. Suggested merging threshold: {:.4f}", engine1->suggestedMergingThreshold());
+        if(_mergeAlgorithm == MergeAlgorithm::MinimumSpanningTree){
+            spdlog::info("GrainSegmentationEngine1 complete.");
+        }else{
+            spdlog::info("GrainSegmentationEngine1 complete. Suggested merging threshold: {:.4f}", engine1->suggestedMergingThreshold());
+        }
         spdlog::info("Running GrainSegmentationEngine2...");
 
         GrainSegmentationEngine2 engine2(
