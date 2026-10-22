@@ -2,10 +2,14 @@
 #include <volt/analysis/ptm_structure_analysis.h>
 #include <volt/core/frame_adapter.h>
 #include <volt/core/analysis_result.h>
+#include <volt/core/progress.h>
 #include <volt/utilities/json_utils.h>
 #include <spdlog/spdlog.h>
 #include <map>
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <limits>
 #include <utility>
 
 namespace Volt{
@@ -99,14 +103,34 @@ json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const s
 
     auto structureAnalysis = std::make_unique<StructureAnalysis>(context);
     auto ptmStates = std::make_shared<std::vector<PtmLocalAtomState>>();
+    spdlog::info("Identifying local structures with PTM (RMSD cutoff {}) for {} atoms...", _rmsd, frame.natoms);
+    const Stopwatch ptmTimer;
     determineLocalStructuresWithPTM(*structureAnalysis, _rmsd, ptmStates);
     computeMaximumNeighborDistanceFromPTM(*structureAnalysis);
 
+    constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
+    std::array<std::size_t, K> structureCounts{};
     std::vector<int> extractedStructureTypes;
     extractedStructureTypes.reserve(frame.natoms);
     for(int i = 0; i < frame.natoms; i++){
         extractedStructureTypes.push_back(structureAnalysis->context().structureTypes->getInt(i));
+        const int st = extractedStructureTypes.back();
+        ++structureCounts[(0 <= st && st < K) ? st : 0];
     }
+    const auto share = [&](StructureType st){
+        return percentOf(structureCounts[st], static_cast<std::uint64_t>(frame.natoms));
+    };
+    spdlog::info(
+        "PTM structure identification done in {}: FCC {} ({:.1f}%), HCP {} ({:.1f}%), BCC {} ({:.1f}%), "
+        "ICO {} ({:.1f}%), SC {} ({:.1f}%), Other {} ({:.1f}%)",
+        ptmTimer.elapsed(),
+        structureCounts[StructureType::FCC], share(StructureType::FCC),
+        structureCounts[StructureType::HCP], share(StructureType::HCP),
+        structureCounts[StructureType::BCC], share(StructureType::BCC),
+        structureCounts[StructureType::ICO], share(StructureType::ICO),
+        structureCounts[StructureType::SC], share(StructureType::SC),
+        structureCounts[StructureType::OTHER], share(StructureType::OTHER)
+    );
 
     if(!outputFilename.empty()){
         spdlog::info("Running grain segmentation with in-memory PTM data");
