@@ -1104,12 +1104,22 @@ public:
             meanQ[i] = Quaternion(qptr[4 * i + 0], qptr[4 * i + 1], qptr[4 * i + 2], qptr[4 * i + 3]);
         }
 
+        size_t appliedMerges = 0;
         for(const auto& node : dendro){
             double logD = std::log(node.distance);
             if(logD > thr) break;
             uf.merge(node.a, node.b);
             size_t p = uf.find(node.a);
             meanQ[p] = node.orientation;
+            ++appliedMerges;
+        }
+        if(_engine1->algorithmType() == MergeAlgorithm::MinimumSpanningTree){
+            spdlog::info("  Applied {} of {} merges with disorientation up to {} degrees",
+                appliedMerges, dendro.size(), _mergingThreshold);
+        }else{
+            spdlog::info("  Applied {} of {} merges up to merging threshold {:.4f} ({})",
+                appliedMerges, dendro.size(), thr,
+                _engine1->algorithmType() == MergeAlgorithm::GraphClusteringAutomatic ? "suggested" : "manual");
         }
 
         std::vector<size_t> rep2id(_numParticles, 0);
@@ -1203,6 +1213,12 @@ private:
 
     void mergeOrphanAtoms(){
         using NeighborBond = GrainSegmentationEngine1::NeighborBond;
+        const Stopwatch timer;
+        size_t orphanAtoms = _numParticles;
+        for(const auto& grain : _grains){
+            orphanAtoms -= grain.size;
+        }
+        size_t adoptedAtoms = 0;
 
         std::vector<NeighborBond> noncrystallineBonds;
         for(auto nb : _engine1->neighborBonds()){
@@ -1230,6 +1246,7 @@ private:
             }
         }
 
+        ProgressReporter progress("  Adopting orphan atoms", orphanAtoms);
         while(!pq.empty()){
             PQNode node = pq.top();
             pq.pop();
@@ -1238,6 +1255,7 @@ private:
                 continue;
 
             _atomClusters->setInt(node.particleIndex, node.cluster);
+            progress.update(++adoptedAtoms);
 
             if(node.cluster >= 1 && (size_t) node.cluster <= _grains.size())
                 _grains[node.cluster - 1].size++;
@@ -1256,6 +1274,8 @@ private:
                 pq.push({ node.cluster, neighborIndex, node.length + bond.length });
             }
         }
+        spdlog::info("  Orphan adoption: {} of {} unassigned atoms joined a neighboring grain in {}",
+            adoptedAtoms, orphanAtoms, timer.elapsed());
     }
 
     std::shared_ptr<const GrainSegmentationEngine1> _engine1;
