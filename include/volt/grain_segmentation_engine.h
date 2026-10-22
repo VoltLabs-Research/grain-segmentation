@@ -1,6 +1,7 @@
 #pragma once
 
 #include <volt/core/particle_property.h>
+#include <volt/core/progress.h>
 #include <volt/core/simulation_cell.h>
 #include <volt/math/matrix3.h>
 #include <volt/math/quaternion.h>
@@ -9,6 +10,7 @@
 #include <volt/analysis/nearest_neighbor_finder.h>
 
 #include <ptm_functions.h>
+#include <spdlog/spdlog.h>
 #include <boost/sort/sort.hpp>
 #include <boost/intrusive/rbtree_algorithms.hpp>
 #include <boost/heap/priority_queue.hpp>
@@ -655,6 +657,7 @@ private:
 
 private:
     void createNeighborBonds(){
+        const Stopwatch timer;
         PTM neighFinder;
         if(!neighFinder.prepare(_positions->constDataPoint3(), _numParticles, _simCell)){
             throw std::runtime_error("Error trying to prepare PTM neighbor finder.");
@@ -667,6 +670,7 @@ private:
 
         tbb::enumerable_thread_specific<std::vector<NeighborBond>> tlsBonds;
 
+        ProgressReporter progress("  Building neighbor bonds", _numParticles);
         tbb::parallel_for(tbb::blocked_range<std::size_t>(0, _numParticles, 1024), [&](const tbb::blocked_range<std::size_t>& r){
             auto& base = baseQueries.local();
             auto& out = tlsBonds.local();
@@ -700,11 +704,13 @@ private:
                     }
                 }
             }
+            progress.advance(r.size());
         }, tbb::auto_partitioner{});
 
         tlsBonds.combine_each([&](const std::vector<NeighborBond>& v){
             _neighborBonds.insert(_neighborBonds.end(), v.begin(), v.end());
         });
+        spdlog::info("  Neighbor bonds: {} bonds between {} atoms in {}", _neighborBonds.size(), _numParticles, timer.elapsed());
     }
 
     bool interface_cubic_hex(NeighborBond& bond, const InterfaceHandler& iface, Quaternion& outRot){
@@ -730,6 +736,7 @@ private:
         if(!_handleBoundaries) return;
         if(_neighborBonds.empty()) createNeighborBonds();
 
+        const Stopwatch timer;
         InterfaceHandler iface(_structuresProperty);
 
         PTM neighFinder;
@@ -747,6 +754,7 @@ private:
         };
 
         std::priority_queue<NeighborBond, std::vector<NeighborBond>, PQCmp> pq;
+        size_t rotatedAtoms = 0;
 
         for(auto b : _neighborBonds){
             Quaternion rot;
@@ -765,6 +773,7 @@ private:
             size_t idx = bond.b; 
             _adjustedStructureTypes[idx] = iface.parent_phase(_adjustedStructureTypes[idx]);
             _adjustedOrientations[idx]   = rotated;
+            ++rotatedAtoms;
 
             base.findNeighbors(idx);
             const auto& res = base.results();
@@ -779,6 +788,8 @@ private:
                 }
             }
         }
+        spdlog::info("  Coherent interfaces: rotated {} atoms onto their parent phase (FCC/HCP parent {}) in {}",
+            rotatedAtoms, structureTypeName(iface.parent_phase(StructureType::FCC)), timer.elapsed());
     }
 
     bool isCrystallineBond(const NeighborBond& b) const{
@@ -797,10 +808,12 @@ private:
 
     void computeDisorientationAngles(){
         if(_neighborBonds.empty()) createNeighborBonds();
+        const Stopwatch timer;
         const size_t N = _neighborBonds.size();
 
         InterfaceHandler iface(_structuresProperty);
 
+        ProgressReporter progress("  Computing bond disorientations", N);
         tbb::parallel_for(tbb::blocked_range<size_t>(0, N, 1024), [&](const tbb::blocked_range<size_t>& r){
             for(size_t i = r.begin(); i != r.end(); ++i){
                 auto& b = _neighborBonds[i];
@@ -826,6 +839,7 @@ private:
                     b.disorientation = std::numeric_limits<double>::infinity();
                 }
             }
+            progress.advance(r.size());
         }, tbb::auto_partitioner{});
 
         tbb::parallel_sort(_neighborBonds.begin(), _neighborBonds.end(), [](const NeighborBond& x, const NeighborBond& y){
@@ -833,6 +847,7 @@ private:
             if(x.a != y.a) return x.a < y.a;
             return x.b < y.b;
         });
+        spdlog::info("  Disorientations: {} bonds computed and sorted in {}", N, timer.elapsed());
     }
 
     double calculate_disorientation(int structureType, Quaternion& qa, const Quaternion& qb){
@@ -874,12 +889,16 @@ private:
         double totalWeight = 1;
 
         size_t progressVal = 0;
+        // Every contraction or isolation retires one node, so retired nodes measure the progress.
+        const size_t initialNodes = graph.num_nodes();
+        ProgressReporter progress("  Graph clustering", initialNodes);
         std::vector<size_t> chain;
         while(graph.num_nodes()){
             size_t node = graph.next_node();
 
             chain.push_back(node);
             while(!chain.empty()){
+                progress.update(initialNodes - graph.num_nodes());
 
                 size_t a = chain.back();
                 chain.pop_back();
@@ -926,15 +945,19 @@ private:
     }
 
     void determineMergeSequence(){
+        const Stopwatch timer;
         Graph graph(_numParticles, _neighborBonds.size());
+        size_t graphEdges = 0;
         if(_algorithmType == MergeAlgorithm::GraphClusteringAutomatic || _algorithmType == MergeAlgorithm::GraphClusteringManual){
             for(auto edge : _neighborBonds){
                 if(isCrystallineBond(edge) && edge.disorientation < _misorientationThresholdDeg){
                     double weight = calculateGraphWeight(edge.disorientation);
                     graph.add_edge(edge.a, edge.b, weight);
+                    ++graphEdges;
                 }
             }
         }
+        const size_t graphNodes = graph.num_nodes();
 
         std::vector<Quaternion> qsum(_adjustedOrientations.cbegin(), _adjustedOrientations.cend());
         DisjointSet uf(_numParticles);
@@ -1002,6 +1025,11 @@ private:
                     logMergeDistanceArray.push_back(regressor.ys[i]);
                 }
             }
+            spdlog::info("  Merge sequence: {} merges from graph clustering of {} atoms over {} bonds below {} degrees in {}",
+                _dendrogram.size(), graphNodes, graphEdges, _misorientationThresholdDeg, timer.elapsed());
+        }else{
+            spdlog::info("  Merge sequence: {} merges from the minimum spanning tree of bonds below {} degrees in {}",
+                _dendrogram.size(), _misorientationThresholdDeg, timer.elapsed());
         }
     }
 
