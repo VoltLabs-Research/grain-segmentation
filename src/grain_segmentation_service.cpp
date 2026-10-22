@@ -236,6 +236,7 @@ json GrainSegmentationService::performGrainSegmentation(
                 spdlog::warn("{} atoms have no bonded path to any grain and stay unassigned", ungroupedAtoms);
             }
         }
+        Stopwatch exportTimer;
 
         auto atomClusters = engine2.atomClusters();
         std::vector<int> grainIds(frame.natoms, 0);
@@ -296,9 +297,11 @@ json GrainSegmentationService::performGrainSegmentation(
 
         const std::string parquetPath = outputFile + "_grains.parquet";
         JsonUtils::writeJsonToParquet(result, parquetPath, false);
-        spdlog::info("Exported grain data to: {}", parquetPath);
+        spdlog::info("Exported grain data to: {} ({})", parquetPath, exportTimer.elapsed());
 
         {
+            spdlog::info("Exporting per-atom data for {} atoms...", frame.natoms);
+            exportTimer.restart();
             constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
             std::vector<std::string> names(K);
             for(int st = 0; st < K; st++)
@@ -327,9 +330,12 @@ json GrainSegmentationService::performGrainSegmentation(
 
             json structuresListing = json::array();
             json atomsByStructure;
+            ProgressReporter structureProgress("  Serializing atoms by structure", static_cast<std::uint64_t>(frame.natoms));
+            size_t serializedAtoms = 0;
             for(int st : structureOrder){
                 json atomsArray = json::array();
                 for(size_t atomIndex : structureAtomIndices[static_cast<size_t>(st)]){
+                    structureProgress.update(++serializedAtoms);
                     const Point3& pos = frame.positions[atomIndex];
                     const PtmLocalAtomState& state = ptmStates[atomIndex];
                     const Quaternion q = state.orientation.normalized();
@@ -357,7 +363,9 @@ json GrainSegmentationService::performGrainSegmentation(
             }
 
             json perAtom = json::array();
+            ProgressReporter perAtomProgress("  Serializing per-atom properties", static_cast<std::uint64_t>(frame.natoms));
             for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
+                perAtomProgress.update(i + 1);
                 const int raw = structureTypes[i];
                 const int st = (0 <= raw && raw < K) ? raw : 0;
                 const PtmLocalAtomState& state = ptmStates[i];
@@ -392,7 +400,7 @@ json GrainSegmentationService::performGrainSegmentation(
             exportWrapper["export"]["AtomisticExporter"] = atomsByStructure;
             const std::string atomsPath = outputFile + "_atoms.parquet";
             JsonUtils::writeJsonToParquet(exportWrapper, atomsPath, false);
-            spdlog::info("Exported atoms data to: {}", atomsPath);
+            spdlog::info("Exported atoms data to: {} ({})", atomsPath, exportTimer.elapsed());
         }
 
         return result;
