@@ -38,6 +38,18 @@ enum class MergeAlgorithm{
     MinimumSpanningTree
 };
 
+inline const char* mergeAlgorithmName(MergeAlgorithm algorithm){
+    switch(algorithm){
+        case MergeAlgorithm::GraphClusteringAutomatic:
+            return "GraphClusteringAutomatic";
+        case MergeAlgorithm::GraphClusteringManual:
+            return "GraphClusteringManual";
+        case MergeAlgorithm::MinimumSpanningTree:
+            return "MinimumSpanningTree";
+    }
+    return "Unknown";
+}
+
 union NodeUnion{
     size_t opposite;
     size_t size;

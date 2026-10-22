@@ -146,8 +146,6 @@ json GrainSegmentationService::performGrainSegmentation(
     const std::vector<PtmLocalAtomState>& ptmStates,
     const std::string &outputFile
 ){
-    spdlog::info("Starting grain segmentation analysis...");
-
     try{
         if(ptmStates.size() < static_cast<size_t>(frame.natoms)){
             spdlog::error("PTM state data not available for all atoms.");
@@ -178,7 +176,9 @@ json GrainSegmentationService::performGrainSegmentation(
             correspondences->setInt64(i, 0);
         }
 
-        spdlog::info("Running GrainSegmentationEngine1...");
+        spdlog::info("Running GrainSegmentationEngine1 ({}, coherent interfaces {}) on {} atoms...",
+            mergeAlgorithmName(_mergeAlgorithm), _handleCoherentInterfaces ? "on" : "off", frame.natoms);
+        Stopwatch engineTimer;
         auto engine1 = std::make_shared<GrainSegmentationEngine1>(
             positions,
             structures,
@@ -193,11 +193,13 @@ json GrainSegmentationService::performGrainSegmentation(
         engine1->perform();
 
         if(_mergeAlgorithm == MergeAlgorithm::MinimumSpanningTree){
-            spdlog::info("GrainSegmentationEngine1 complete.");
+            spdlog::info("GrainSegmentationEngine1 complete in {}.", engineTimer.elapsed());
         }else{
-            spdlog::info("GrainSegmentationEngine1 complete. Suggested merging threshold: {:.4f}", engine1->suggestedMergingThreshold());
+            spdlog::info("GrainSegmentationEngine1 complete in {}. Suggested merging threshold: {:.4f}",
+                engineTimer.elapsed(), engine1->suggestedMergingThreshold());
         }
         spdlog::info("Running GrainSegmentationEngine2...");
+        engineTimer.restart();
 
         GrainSegmentationEngine2 engine2(
             engine1,
@@ -208,7 +210,32 @@ json GrainSegmentationService::performGrainSegmentation(
         );
 
         engine2.perform();
-        spdlog::info("Found {} grains", engine2.grainCount());
+
+        // Grains are few, so a copy of their sizes for the median is cheap.
+        std::vector<size_t> grainSizes;
+        grainSizes.reserve(engine2.grains().size());
+        size_t groupedAtoms = 0;
+        for(const auto& grain : engine2.grains()){
+            grainSizes.push_back(grain.size);
+            groupedAtoms += grain.size;
+        }
+        const size_t ungroupedAtoms = static_cast<size_t>(frame.natoms) > groupedAtoms
+            ? static_cast<size_t>(frame.natoms) - groupedAtoms : 0;
+        if(grainSizes.empty()){
+            spdlog::warn("Found no grains with at least {} atoms ({}); all {} atoms are unassigned",
+                _minGrainAtomCount, engineTimer.elapsed(), frame.natoms);
+        }else{
+            const auto [smallest, largest] = std::minmax_element(grainSizes.begin(), grainSizes.end());
+            const size_t smallestSize = *smallest;
+            const size_t largestSize = *largest;
+            std::nth_element(grainSizes.begin(), grainSizes.begin() + grainSizes.size() / 2, grainSizes.end());
+            spdlog::info("Found {} grains in {}: largest {} atoms, median {}, smallest {}; {} atoms ({:.1f}%) unassigned",
+                engine2.grainCount(), engineTimer.elapsed(), largestSize, grainSizes[grainSizes.size() / 2], smallestSize,
+                ungroupedAtoms, percentOf(ungroupedAtoms, static_cast<std::uint64_t>(frame.natoms)));
+            if(_adoptOrphanAtoms && ungroupedAtoms > 0){
+                spdlog::warn("{} atoms have no bonded path to any grain and stay unassigned", ungroupedAtoms);
+            }
+        }
 
         auto atomClusters = engine2.atomClusters();
         std::vector<int> grainIds(frame.natoms, 0);
