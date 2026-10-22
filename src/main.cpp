@@ -1,4 +1,5 @@
 #include <volt/cli/common.h>
+#include <volt/core/progress.h>
 #include <volt/grain_segmentation_service.h>
 #include <volt/plugin/option_reader.h>
 #include <oneapi/tbb/global_control.h>
@@ -91,6 +92,7 @@ int main(int argc, char* argv[]) {
         static_cast<std::size_t>(std::max(1, requestedThreads))
     );
     initLogging("grain-segmentation");
+    const Stopwatch runTimer;
     spdlog::info("Using {} threads (OneTBB)", requestedThreads);
     
     LammpsParser::Frame frame;
@@ -140,8 +142,9 @@ int main(int argc, char* argv[]) {
     json result = analyzer.compute(frame, outputBase);
     
     if (result.value("is_failed", false)) {
-        spdlog::error("Analysis failed: {}", result.value("error", "Unknown error"));
+        spdlog::error("Analysis failed after {}: {}", runTimer.elapsed(), result.value("error", "Unknown error"));
         return 1;
     }
+    spdlog::info("Grain Segmentation completed in {}.", runTimer.elapsed());
     return 0;
 }
