@@ -363,7 +363,7 @@ json GrainSegmentationService::performGrainSegmentation(
                     }
                     atomsArray.push_back(std::move(atom));
                 }
-                atomsByStructure[names[st]] = atomsArray;
+                atomsByStructure[names[st]] = std::move(atomsArray);
                 structuresListing.push_back({
                     {"structure_id", st},
                     {"structure_name", names[st]},
@@ -408,7 +408,7 @@ json GrainSegmentationService::performGrainSegmentation(
             };
             exportWrapper["per-atom-properties"] = std::move(perAtom);
             exportWrapper["export"] = json::object();
-            exportWrapper["export"]["AtomisticExporter"] = atomsByStructure;
+            exportWrapper["export"]["AtomisticExporter"] = std::move(atomsByStructure);
             const std::string atomsPath = outputFile + "_atoms.parquet";
             JsonUtils::writeJsonToParquet(exportWrapper, atomsPath, false);
             spdlog::info("Exported atoms data to: {} ({})", atomsPath, exportTimer.elapsed());
