@@ -540,9 +540,20 @@ public:
     }
 
     void perform(){
+        // Neighbor bonds, coherent interfaces, bond disorientations and the merge sequence, whose
+        // graph clustering runs serially over every atom; the minimum spanning tree is cheaper.
+        ProgressSteps steps({
+            1.0,
+            _handleBoundaries ? 1.0 : 0.0,
+            1.0,
+            _algorithmType == MergeAlgorithm::MinimumSpanningTree ? 1.0 : 5.0
+        });
         createNeighborBonds();
+        steps.next("Rotating coherent interface atoms");
         rotateInterfaceAtoms();
+        steps.next("Computing bond disorientations");
         computeDisorientationAngles();
+        steps.next("Determining the grain merge sequence");
         determineMergeSequence();
 
         _positions.reset();
@@ -670,10 +681,13 @@ private:
 private:
     void createNeighborBonds(){
         const Stopwatch timer;
+        // Finding each atom's nearest neighbors, then turning them into bonds.
+        ProgressSteps steps({1.0, 1.0});
         PTM neighFinder;
         if(!neighFinder.prepare(_positions->constDataPoint3(), _numParticles, _simCell)){
             throw std::runtime_error("Error trying to prepare PTM neighbor finder.");
         }
+        steps.next();
 
         using BaseQuery = NearestNeighborFinder::Query<PTM::MAX_INPUT_NEIGHBORS>;
         tbb::enumerable_thread_specific<BaseQuery> baseQueries([&]{

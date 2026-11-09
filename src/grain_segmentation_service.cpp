@@ -103,6 +103,8 @@ json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const s
 
     auto structureAnalysis = std::make_unique<StructureAnalysis>(context);
     auto ptmStates = std::make_shared<std::vector<PtmLocalAtomState>>();
+    // PTM, then the segmentation and its outputs, which build a JSON object per atom.
+    ProgressSteps steps({1.0, 8.0});
     spdlog::info("Identifying local structures with PTM (RMSD cutoff {}) for {} atoms...", _rmsd, frame.natoms);
     const Stopwatch ptmTimer;
     determineLocalStructuresWithPTM(*structureAnalysis, _rmsd, ptmStates);
@@ -131,6 +133,7 @@ json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const s
         structureCounts[StructureType::SC], share(StructureType::SC),
         structureCounts[StructureType::OTHER], share(StructureType::OTHER)
     );
+    steps.next("Segmenting grains");
 
     if(!outputFilename.empty()){
         spdlog::info("Running grain segmentation with in-memory PTM data");
@@ -151,6 +154,10 @@ json GrainSegmentationService::performGrainSegmentation(
             spdlog::error("PTM state data not available for all atoms.");
             return AnalysisResult::failure("Grain segmentation requires PTM orientation state for all atoms.");
         }
+
+        // Engine 1, engine 2, the grain table with the atoms grouped by structure, the per-atom
+        // properties and the atoms parquet, which serializes both JSON listings.
+        ProgressSteps steps({7.0, 1.0, 3.0, 3.0, 2.0});
 
         auto positions = std::make_shared<ParticleProperty>(frame.natoms, ParticleProperty::PositionProperty, 0, true);
         for(size_t i = 0; i < frame.positions.size() && i < static_cast<size_t>(frame.natoms); i++){
@@ -198,6 +205,7 @@ json GrainSegmentationService::performGrainSegmentation(
             spdlog::info("GrainSegmentationEngine1 complete in {}. Suggested merging threshold: {:.4f}",
                 engineTimer.elapsed(), engine1->suggestedMergingThreshold());
         }
+        steps.next("Running grain segmentation engine 2");
         spdlog::info("Running GrainSegmentationEngine2...");
         engineTimer.restart();
 
@@ -236,6 +244,7 @@ json GrainSegmentationService::performGrainSegmentation(
                 spdlog::warn("{} atoms have no bonded path to any grain and stay unassigned", ungroupedAtoms);
             }
         }
+        steps.next("Building the grain table");
         Stopwatch exportTimer;
 
         auto atomClusters = engine2.atomClusters();
@@ -361,6 +370,7 @@ json GrainSegmentationService::performGrainSegmentation(
                     {"atom_count", static_cast<int>(structureAtomIndices[static_cast<size_t>(st)].size())}
                 });
             }
+            steps.next("Collecting per-atom properties");
 
             json perAtom = json::array();
             ProgressReporter perAtomProgress("  Serializing per-atom properties", static_cast<std::uint64_t>(frame.natoms));
@@ -384,6 +394,7 @@ json GrainSegmentationService::performGrainSegmentation(
                 }
                 perAtom.push_back(std::move(p));
             }
+            steps.next("Writing the atoms table");
 
             json exportWrapper;
             exportWrapper["main_listing"] = {
