@@ -94,6 +94,9 @@ int main(int argc, char* argv[]) {
     initLogging("grain-segmentation");
     const Stopwatch runTimer;
     spdlog::info("Using {} threads (OneTBB)", requestedThreads);
+    // Reading the input, then the analysis, the steps pluginMain takes for every other plugin.
+    JobProgress& progress = JobProgress::instance();
+    progress.beginInput();
     
     LammpsParser::Frame frame;
     if (!parseFrame(filename, frame)) return 1;
@@ -139,6 +142,7 @@ int main(int argc, char* argv[]) {
     );
     
     spdlog::info("Starting grain segmentation...");
+    progress.beginAnalysis(descriptor.description);
     json result = analyzer.compute(frame, outputBase);
     
     if (result.value("is_failed", false)) {
@@ -146,5 +150,6 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     spdlog::info("Grain Segmentation completed in {}.", runTimer.elapsed());
+    progress.finish();
     return 0;
 }
