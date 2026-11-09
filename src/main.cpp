@@ -143,7 +143,13 @@ int main(int argc, char* argv[]) {
     
     spdlog::info("Starting grain segmentation...");
     progress.beginAnalysis(descriptor.description);
-    json result = analyzer.compute(frame, outputBase);
+    // The analysis throws on bad input; report it as the failure it is instead of aborting.
+    json result;
+    try {
+        result = analyzer.compute(frame, outputBase);
+    } catch (const std::exception& error) {
+        result = json{{"is_failed", true}, {"error", error.what()}};
+    }
     
     if (result.value("is_failed", false)) {
         spdlog::error("Analysis failed after {}: {}", runTimer.elapsed(), result.value("error", "Unknown error"));
