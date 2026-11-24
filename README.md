@@ -5,6 +5,7 @@ Segments crystalline grains from local PTM structure, merging regions with simil
 ## Install
 
 ```bash
+npm install -g @voltstack/vpm
 vpm install @voltlabs/grain-segmentation
 ```
 
