@@ -1,53 +1,20 @@
 #include <volt/grain_segmentation_service.h>
+#include <volt/grain_segmentation_log.h>
 #include <volt/analysis/ptm_structure_analysis.h>
+#include <volt/analysis/structure_identification_export.h>
 #include <volt/core/frame_adapter.h>
 #include <volt/core/analysis_result.h>
 #include <volt/core/progress.h>
+#include <volt/plugin/output_files.h>
 #include <volt/utilities/json_utils.h>
-#include <spdlog/spdlog.h>
+#include <volt/utilities/written_table.h>
 #include <map>
-#include <algorithm>
-#include <array>
 #include <cstdint>
-#include <limits>
 #include <utility>
 
 namespace Volt{
 
 using namespace Volt::Particles;
-
-std::string structureTypeNameForExport(int structureType){
-    switch(static_cast<StructureType>(structureType)){
-        case StructureType::SC:
-            return "SC";
-        case StructureType::FCC:
-            return "FCC";
-        case StructureType::HCP:
-            return "HCP";
-        case StructureType::BCC:
-            return "BCC";
-        case StructureType::CUBIC_DIAMOND:
-            return "CUBIC_DIAMOND";
-        case StructureType::HEX_DIAMOND:
-            return "HEX_DIAMOND";
-        case StructureType::ICO:
-            return "ICO";
-        case StructureType::GRAPHENE:
-            return "GRAPHENE";
-        case StructureType::CUBIC_DIAMOND_FIRST_NEIGH:
-            return "CUBIC_DIAMOND_FIRST_NEIGH";
-        case StructureType::CUBIC_DIAMOND_SECOND_NEIGH:
-            return "CUBIC_DIAMOND_SECOND_NEIGH";
-        case StructureType::HEX_DIAMOND_FIRST_NEIGH:
-            return "HEX_DIAMOND_FIRST_NEIGH";
-        case StructureType::HEX_DIAMOND_SECOND_NEIGH:
-            return "HEX_DIAMOND_SECOND_NEIGH";
-        case StructureType::OTHER:
-        case StructureType::NUM_STRUCTURE_TYPES:
-        default:
-            return "OTHER";
-    }
-}
 
 GrainSegmentationService::GrainSegmentationService()
     : _rmsd(0.10f),
@@ -62,26 +29,35 @@ void GrainSegmentationService::setRMSD(float rmsd){
     _rmsd = rmsd;
 }
 
-void GrainSegmentationService::setParameters(
-    bool adoptOrphanAtoms,
-    int minGrainAtomCount,
-    bool handleCoherentInterfaces,
-    bool outputBonds,
-    MergeAlgorithm mergeAlgorithm,
-    double mergingThreshold
-){
-    _adoptOrphanAtoms = adoptOrphanAtoms;
+void GrainSegmentationService::setMinGrainAtomCount(int minGrainAtomCount){
     _minGrainAtomCount = minGrainAtomCount;
+}
+
+void GrainSegmentationService::setAdoptOrphanAtoms(bool adoptOrphanAtoms){
+    _adoptOrphanAtoms = adoptOrphanAtoms;
+}
+
+void GrainSegmentationService::setHandleCoherentInterfaces(bool handleCoherentInterfaces){
     _handleCoherentInterfaces = handleCoherentInterfaces;
-    _outputBonds = outputBonds;
+}
+
+void GrainSegmentationService::setMergeAlgorithm(MergeAlgorithm mergeAlgorithm){
     _mergeAlgorithm = mergeAlgorithm;
+}
+
+void GrainSegmentationService::setMergingThreshold(double mergingThreshold){
     _mergingThreshold = mergingThreshold;
+}
+
+void GrainSegmentationService::setOutputBonds(bool outputBonds){
+    _outputBonds = outputBonds;
 }
 
 json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const std::string &outputFilename){
     if(frame.simulationCell.is2D())
         return AnalysisResult::failure("The grain segmentation modifier does not support 2d simulation cells.");
 
+    GrainSegmentationLog log;
     FrameAdapter::PreparedAnalysisInput prepared;
     std::string frameError;
     if(!FrameAdapter::prepareAnalysisInput(frame, prepared, &frameError))
@@ -103,41 +79,24 @@ json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const s
 
     auto structureAnalysis = std::make_unique<StructureAnalysis>(context);
     auto ptmStates = std::make_shared<std::vector<PtmLocalAtomState>>();
-    // PTM, then the segmentation and its outputs, which build a JSON object per atom.
-    ProgressSteps steps({1.0, 8.0});
-    spdlog::info("Identifying local structures with PTM (RMSD cutoff {}) for {} atoms...", _rmsd, frame.natoms);
-    const Stopwatch ptmTimer;
+    // The segmentation's outputs build a JSON object per atom.
+    ProgressSteps steps({
+        {"Identifying local structures with PTM", 1.0},
+        {"Segmenting grains", 8.0},
+    });
     determineLocalStructuresWithPTM(*structureAnalysis, _rmsd, ptmStates);
     computeMaximumNeighborDistanceFromPTM(*structureAnalysis);
+    log.dump(*structureAnalysis);
 
-    constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
-    std::array<std::size_t, K> structureCounts{};
     std::vector<int> extractedStructureTypes;
     extractedStructureTypes.reserve(frame.natoms);
     for(int i = 0; i < frame.natoms; i++){
         extractedStructureTypes.push_back(structureAnalysis->context().structureTypes->getInt(i));
-        const int st = extractedStructureTypes.back();
-        ++structureCounts[(0 <= st && st < K) ? st : 0];
     }
-    const auto share = [&](StructureType st){
-        return percentOf(structureCounts[st], static_cast<std::uint64_t>(frame.natoms));
-    };
-    spdlog::info(
-        "PTM structure identification done in {}: FCC {} ({:.1f}%), HCP {} ({:.1f}%), BCC {} ({:.1f}%), "
-        "ICO {} ({:.1f}%), SC {} ({:.1f}%), Other {} ({:.1f}%)",
-        ptmTimer.elapsed(),
-        structureCounts[StructureType::FCC], share(StructureType::FCC),
-        structureCounts[StructureType::HCP], share(StructureType::HCP),
-        structureCounts[StructureType::BCC], share(StructureType::BCC),
-        structureCounts[StructureType::ICO], share(StructureType::ICO),
-        structureCounts[StructureType::SC], share(StructureType::SC),
-        structureCounts[StructureType::OTHER], share(StructureType::OTHER)
-    );
-    steps.next("Segmenting grains");
+    steps.next();
 
     if(!outputFilename.empty()){
-        spdlog::info("Running grain segmentation with in-memory PTM data");
-        return performGrainSegmentation(frame, extractedStructureTypes, *ptmStates, outputFilename);
+        return performGrainSegmentation(frame, extractedStructureTypes, *ptmStates, outputFilename, log);
     }
 
     return AnalysisResult::failure("No output filename specified");
@@ -147,17 +106,22 @@ json GrainSegmentationService::performGrainSegmentation(
     const LammpsParser::Frame &frame,
     const std::vector<int>& structureTypes,
     const std::vector<PtmLocalAtomState>& ptmStates,
-    const std::string &outputFile
+    const std::string &outputFile,
+    GrainSegmentationLog& log
 ){
     try{
         if(ptmStates.size() < static_cast<size_t>(frame.natoms)){
-            spdlog::error("PTM state data not available for all atoms.");
             return AnalysisResult::failure("Grain segmentation requires PTM orientation state for all atoms.");
         }
 
-        // Engine 1, engine 2, the grain table with the atoms grouped by structure, the per-atom
-        // properties and the atoms parquet, which serializes both JSON listings.
-        ProgressSteps steps({7.0, 1.0, 3.0, 3.0, 2.0});
+        // The atoms table serializes both JSON listings.
+        ProgressSteps steps({
+            {"Running grain segmentation engine 1", 7.0},
+            {"Running grain segmentation engine 2", 1.0},
+            {"Building the grain table", 3.0},
+            {"Collecting per-atom properties", 3.0},
+            {"Writing the atoms table", 2.0},
+        });
 
         auto positions = std::make_shared<ParticleProperty>(frame.natoms, ParticleProperty::PositionProperty, 0, true);
         for(size_t i = 0; i < frame.positions.size() && i < static_cast<size_t>(frame.natoms); i++){
@@ -183,9 +147,6 @@ json GrainSegmentationService::performGrainSegmentation(
             correspondences->setInt64(i, 0);
         }
 
-        spdlog::info("Running GrainSegmentationEngine1 ({}, coherent interfaces {}) on {} atoms...",
-            mergeAlgorithmName(_mergeAlgorithm), _handleCoherentInterfaces ? "on" : "off", frame.natoms);
-        Stopwatch engineTimer;
         auto engine1 = std::make_shared<GrainSegmentationEngine1>(
             positions,
             structures,
@@ -196,19 +157,10 @@ json GrainSegmentationService::performGrainSegmentation(
             _handleCoherentInterfaces,
             _outputBonds
         );
+        engine1->perform(log);
+        log.dump(*engine1);
 
-        engine1->perform();
-
-        if(_mergeAlgorithm == MergeAlgorithm::MinimumSpanningTree){
-            spdlog::info("GrainSegmentationEngine1 complete in {}.", engineTimer.elapsed());
-        }else{
-            spdlog::info("GrainSegmentationEngine1 complete in {}. Suggested merging threshold: {:.4f}",
-                engineTimer.elapsed(), engine1->suggestedMergingThreshold());
-        }
-        steps.next("Running grain segmentation engine 2");
-        spdlog::info("Running GrainSegmentationEngine2...");
-        engineTimer.restart();
-
+        steps.next();
         GrainSegmentationEngine2 engine2(
             engine1,
             _mergingThreshold,
@@ -216,209 +168,146 @@ json GrainSegmentationService::performGrainSegmentation(
             static_cast<size_t>(_minGrainAtomCount),
             true
         );
+        engine2.perform(log);
+        log.dump(engine2);
 
-        engine2.perform();
-
-        // Grains are few, so a copy of their sizes for the median is cheap.
-        std::vector<size_t> grainSizes;
-        grainSizes.reserve(engine2.grains().size());
-        size_t groupedAtoms = 0;
-        for(const auto& grain : engine2.grains()){
-            grainSizes.push_back(grain.size);
-            groupedAtoms += grain.size;
-        }
-        const size_t ungroupedAtoms = static_cast<size_t>(frame.natoms) > groupedAtoms
-            ? static_cast<size_t>(frame.natoms) - groupedAtoms : 0;
-        if(grainSizes.empty()){
-            spdlog::warn("Found no grains with at least {} atoms ({}); all {} atoms are unassigned",
-                _minGrainAtomCount, engineTimer.elapsed(), frame.natoms);
-        }else{
-            const auto [smallest, largest] = std::minmax_element(grainSizes.begin(), grainSizes.end());
-            const size_t smallestSize = *smallest;
-            const size_t largestSize = *largest;
-            std::nth_element(grainSizes.begin(), grainSizes.begin() + grainSizes.size() / 2, grainSizes.end());
-            spdlog::info("Found {} grains in {}: largest {} atoms, median {}, smallest {}; {} atoms ({:.1f}%) unassigned",
-                engine2.grainCount(), engineTimer.elapsed(), largestSize, grainSizes[grainSizes.size() / 2], smallestSize,
-                ungroupedAtoms, percentOf(ungroupedAtoms, static_cast<std::uint64_t>(frame.natoms)));
-            if(_adoptOrphanAtoms && ungroupedAtoms > 0){
-                spdlog::warn("{} atoms have no bonded path to any grain and stay unassigned", ungroupedAtoms);
-            }
-        }
-        steps.next("Building the grain table");
-        Stopwatch exportTimer;
-
+        steps.next();
         auto atomClusters = engine2.atomClusters();
         std::vector<int> grainIds(frame.natoms, 0);
         for(size_t i = 0; i < static_cast<size_t>(frame.natoms); i++){
             grainIds[i] = atomClusters->getInt(i);
         }
+        json result = grainTable(frame, *engine1, engine2, grainIds);
+        log.dump(JsonUtils::writeSummaryTable(result, outputFile, "grains", "Grains"));
+        json atomsTable = atomsByStructure(frame, structureTypes, ptmStates, grainIds);
 
-        const SimulationCell& cell = frame.simulationCell;
-        std::map<int, Point3> grainReference;
-        std::map<int, Vector3> grainOffsetSum;
-        std::map<int, int> grainAtomCount;
-        for(int i = 0; i < frame.natoms; i++){
-            int gid = grainIds[i];
-            if(gid == 0) continue;
-            if(i >= static_cast<int>(frame.positions.size())) continue;
-            const Point3& p = frame.positions[i];
-            auto it = grainReference.find(gid);
-            if(it == grainReference.end()){
-                grainReference[gid] = p;
-                grainOffsetSum[gid] = Vector3(Vector3::Zero{});
-                grainAtomCount[gid] = 1;
-            }else{
-                grainOffsetSum[gid] += cell.unwrapVector(p - it->second);
-                grainAtomCount[gid]++;
-            }
-        }
+        steps.next();
+        atomsTable["per-atom-properties"] = perAtomProperties(frame, structureTypes, ptmStates, grainIds);
 
-        json grainsArray = json::array();
-        for(const auto &grain : engine2.grains()){
-            json grainInfo;
-            grainInfo["id"] = grain.id;
-            grainInfo["size"] = grain.size;
-            grainInfo["structure_type"] = grain.structureType;
-            grainInfo["structure_name"] = structureTypeNameForExport(grain.structureType);
-            grainInfo["orientation"] = {
-                grain.orientation.x(),
-                grain.orientation.y(),
-                grain.orientation.z(),
-                grain.orientation.w()
-            };
-            if(grainAtomCount.count(grain.id) && grainAtomCount[grain.id] > 0){
-                int cnt = grainAtomCount[grain.id];
-                Point3 com = grainReference[grain.id] + (grainOffsetSum[grain.id] / cnt);
-                com = cell.wrapPoint(com);
-                grainInfo["pos"] = { com.x(), com.y(), com.z() };
-            } else {
-                grainInfo["pos"] = {0.0, 0.0, 0.0};
-            }
-            grainsArray.push_back(grainInfo);
-        }
-
-        json result;
-        result["main_listing"] = {
-            { "total_grains", static_cast<int>(engine2.grainCount()) },
-            { "merging_threshold", engine1->suggestedMergingThreshold() }
-        };
-        result["sub_listings"] = { { "grains", grainsArray } };
-
-        const std::string parquetPath = outputFile + "_grains.parquet";
-        JsonUtils::writeJsonToParquet(result, parquetPath, false);
-        spdlog::info("Exported grain data to: {} ({})", parquetPath, exportTimer.elapsed());
-
-        {
-            spdlog::info("Exporting per-atom data for {} atoms...", frame.natoms);
-            exportTimer.restart();
-            constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
-            std::vector<std::string> names(K);
-            for(int st = 0; st < K; st++)
-                names[st] = structureTypeNameForExport(st);
-
-            std::vector<std::vector<size_t>> structureAtomIndices(K);
-            for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
-                const int raw = structureTypes[i];
-                const int st = (0 <= raw && raw < K) ? raw : 0;
-                structureAtomIndices[static_cast<size_t>(st)].push_back(i);
-            }
-
-            std::vector<int> structureOrder;
-            structureOrder.reserve(K);
-            for(int st = 0; st < K; st++){
-                if(!structureAtomIndices[static_cast<size_t>(st)].empty())
-                    structureOrder.push_back(st);
-            }
-            std::sort(structureOrder.begin(), structureOrder.end(),
-                [&](int a, int b){ return names[a] < names[b]; });
-
-            int clusteredAtoms = 0;
-            for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
-                if(grainIds[i] != 0) ++clusteredAtoms;
-            }
-
-            json structuresListing = json::array();
-            json atomsByStructure;
-            ProgressReporter structureProgress("  Serializing atoms by structure", static_cast<std::uint64_t>(frame.natoms));
-            size_t serializedAtoms = 0;
-            for(int st : structureOrder){
-                json atomsArray = json::array();
-                for(size_t atomIndex : structureAtomIndices[static_cast<size_t>(st)]){
-                    structureProgress.update(++serializedAtoms);
-                    const Point3& pos = frame.positions[atomIndex];
-                    const PtmLocalAtomState& state = ptmStates[atomIndex];
-                    const Quaternion q = state.orientation.normalized();
-                    const int grainId = grainIds[atomIndex];
-                    json atom = {
-                        {"id", frame.ids[atomIndex]},
-                        {"pos", {pos.x(), pos.y(), pos.z()}},
-                        {"structure_id", st},
-                        {"structure_name", names[st]},
-                        {"grain_id", grainId},
-                        {"orientation", {q.x(), q.y(), q.z(), q.w()}},
-                        {"ptm_valid", state.valid}
-                    };
-                    if(state.valid){
-                        atom["rmsd"] = state.rmsd;
-                    }
-                    atomsArray.push_back(std::move(atom));
-                }
-                atomsByStructure[names[st]] = std::move(atomsArray);
-                structuresListing.push_back({
-                    {"structure_id", st},
-                    {"structure_name", names[st]},
-                    {"atom_count", static_cast<int>(structureAtomIndices[static_cast<size_t>(st)].size())}
-                });
-            }
-            steps.next("Collecting per-atom properties");
-
-            json perAtom = json::array();
-            ProgressReporter perAtomProgress("  Serializing per-atom properties", static_cast<std::uint64_t>(frame.natoms));
-            for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
-                perAtomProgress.update(i + 1);
-                const int raw = structureTypes[i];
-                const int st = (0 <= raw && raw < K) ? raw : 0;
-                const PtmLocalAtomState& state = ptmStates[i];
-                const Quaternion q = state.orientation.normalized();
-                const int grainId = grainIds[i];
-                json p = {
-                    {"id", frame.ids[i]},
-                    {"structure_id", st},
-                    {"structure_name", names[st]},
-                    {"grain_id", grainId},
-                    {"orientation", {q.x(), q.y(), q.z(), q.w()}},
-                    {"ptm_valid", state.valid}
-                };
-                if(state.valid){
-                    p["rmsd"] = state.rmsd;
-                }
-                perAtom.push_back(std::move(p));
-            }
-            steps.next("Writing the atoms table");
-
-            json exportWrapper;
-            exportWrapper["main_listing"] = {
-                {"total_atoms", frame.natoms},
-                {"structure_count", static_cast<int>(structureOrder.size())},
-                {"clustered_atoms", clusteredAtoms},
-                {"unclustered_atoms", frame.natoms - clusteredAtoms}
-            };
-            exportWrapper["sub_listings"] = {
-                {"structures", structuresListing}
-            };
-            exportWrapper["per-atom-properties"] = std::move(perAtom);
-            exportWrapper["export"] = json::object();
-            exportWrapper["export"]["AtomisticExporter"] = std::move(atomsByStructure);
-            const std::string atomsPath = outputFile + "_atoms.parquet";
-            JsonUtils::writeJsonToParquet(exportWrapper, atomsPath, false);
-            spdlog::info("Exported atoms data to: {} ({})", atomsPath, exportTimer.elapsed());
-        }
+        steps.next();
+        const AtomsTable atoms{outputPath(outputFile, "atoms")};
+        JsonUtils::writeJsonToParquet(atomsTable, atoms.path, false);
+        log.dump(atoms);
 
         return result;
     }catch(const std::exception& e){
-        spdlog::error("Grain segmentation error: {}", e.what());
         return AnalysisResult::failure(std::string("Grain segmentation failed: ") + e.what());
     }
+}
+
+json GrainSegmentationService::grainTable(
+    const LammpsParser::Frame& frame,
+    const GrainSegmentationEngine1& engine1,
+    const GrainSegmentationEngine2& engine2,
+    const std::vector<int>& grainIds
+){
+    const SimulationCell& cell = frame.simulationCell;
+    std::map<int, Point3> grainReference;
+    std::map<int, Vector3> grainOffsetSum;
+    std::map<int, int> grainAtomCount;
+    for(int i = 0; i < frame.natoms; i++){
+        int gid = grainIds[i];
+        if(gid == 0) continue;
+        if(i >= static_cast<int>(frame.positions.size())) continue;
+        const Point3& p = frame.positions[i];
+        auto it = grainReference.find(gid);
+        if(it == grainReference.end()){
+            grainReference[gid] = p;
+            grainOffsetSum[gid] = Vector3(Vector3::Zero{});
+            grainAtomCount[gid] = 1;
+        }else{
+            grainOffsetSum[gid] += cell.unwrapVector(p - it->second);
+            grainAtomCount[gid]++;
+        }
+    }
+
+    json grainsArray = json::array();
+    for(const auto &grain : engine2.grains()){
+        json grainInfo;
+        grainInfo["id"] = grain.id;
+        grainInfo["size"] = grain.size;
+        grainInfo["structure_type"] = grain.structureType;
+        grainInfo["structure_name"] = StructureIdentificationExport::structureTypeNameForExport(grain.structureType);
+        grainInfo["orientation"] = {
+            grain.orientation.x(),
+            grain.orientation.y(),
+            grain.orientation.z(),
+            grain.orientation.w()
+        };
+        if(grainAtomCount.count(grain.id) && grainAtomCount[grain.id] > 0){
+            int cnt = grainAtomCount[grain.id];
+            Point3 com = grainReference[grain.id] + (grainOffsetSum[grain.id] / cnt);
+            com = cell.wrapPoint(com);
+            grainInfo["pos"] = { com.x(), com.y(), com.z() };
+        } else {
+            grainInfo["pos"] = {0.0, 0.0, 0.0};
+        }
+        grainsArray.push_back(grainInfo);
+    }
+
+    json result;
+    result["main_listing"] = {
+        { "total_grains", static_cast<int>(engine2.grainCount()) },
+        { "merging_threshold", engine1.suggestedMergingThreshold() }
+    };
+    result["sub_listings"] = { { "grains", grainsArray } };
+    return result;
+}
+
+json GrainSegmentationService::atomsByStructure(
+    const LammpsParser::Frame& frame,
+    const std::vector<int>& structureTypes,
+    const std::vector<PtmLocalAtomState>& ptmStates,
+    const std::vector<int>& grainIds
+){
+    const StructureIdentificationExport::AtomsByStructure structures = StructureIdentificationExport::groupAtomsByStructure(
+        structureTypes, [&](std::size_t atomIndex){ return grainIds[atomIndex] != 0; });
+
+    ProgressReporter structureProgress("  Serializing atoms by structure", static_cast<std::uint64_t>(frame.natoms));
+    size_t serializedAtoms = 0;
+    return StructureIdentificationExport::atomsByStructureTable(frame, structures, [&](json& atom, std::size_t atomIndex){
+        structureProgress.update(++serializedAtoms);
+        const PtmLocalAtomState& state = ptmStates[atomIndex];
+        const Quaternion q = state.orientation.normalized();
+        atom["grain_id"] = grainIds[atomIndex];
+        atom["orientation"] = {q.x(), q.y(), q.z(), q.w()};
+        atom["ptm_valid"] = state.valid;
+        if(state.valid){
+            atom["rmsd"] = state.rmsd;
+        }
+    });
+}
+
+json GrainSegmentationService::perAtomProperties(
+    const LammpsParser::Frame& frame,
+    const std::vector<int>& structureTypes,
+    const std::vector<PtmLocalAtomState>& ptmStates,
+    const std::vector<int>& grainIds
+){
+    constexpr int K = static_cast<int>(StructureType::NUM_STRUCTURE_TYPES);
+    json perAtom = json::array();
+    ProgressReporter perAtomProgress("  Serializing per-atom properties", static_cast<std::uint64_t>(frame.natoms));
+    for(size_t i = 0; i < static_cast<size_t>(frame.natoms); ++i){
+        perAtomProgress.update(i + 1);
+        const int raw = structureTypes[i];
+        const int st = (0 <= raw && raw < K) ? raw : 0;
+        const PtmLocalAtomState& state = ptmStates[i];
+        const Quaternion q = state.orientation.normalized();
+        const int grainId = grainIds[i];
+        json p = {
+            {"id", frame.ids[i]},
+            {"structure_id", st},
+            {"structure_name", StructureIdentificationExport::structureTypeNameForExport(st)},
+            {"grain_id", grainId},
+            {"orientation", {q.x(), q.y(), q.z(), q.w()}},
+            {"ptm_valid", state.valid}
+        };
+        if(state.valid){
+            p["rmsd"] = state.rmsd;
+        }
+        perAtom.push_back(std::move(p));
+    }
+    return perAtom;
 }
 
 }

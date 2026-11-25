@@ -10,7 +10,6 @@
 #include <volt/analysis/nearest_neighbor_finder.h>
 
 #include <ptm_functions.h>
-#include <spdlog/spdlog.h>
 #include <boost/sort/sort.hpp>
 #include <boost/intrusive/rbtree_algorithms.hpp>
 #include <boost/heap/priority_queue.hpp>
@@ -24,13 +23,14 @@
 #include <unordered_set>
 #include <queue>
 #include <cmath>
-#include <numbers>
 #include <numeric>
 #include <limits>
 #include <stdexcept>
 #include <algorithm>
 
 namespace Volt{
+
+class GrainSegmentationLog;
 
 enum class MergeAlgorithm{
     GraphClusteringAutomatic,
@@ -188,19 +188,6 @@ struct node_ptr_compare{
 };
 
 typedef boost::intrusive::rbtree_algorithms<rbtree_node_traits> algo;
-
-
-static inline HalfEdge* find(HalfEdge* header, size_t index){
-    HalfEdge key;
-    key.data.opposite = index;
-    HalfEdge* result = algo::find(header, &key, node_ptr_compare());
-    return result == header ? nullptr : result;
-}
-
-static inline void insert_halfedge(HalfEdge* header, HalfEdge* edge){
-    algo::insert_equal_upper_bound(header, edge, node_ptr_compare());
-    header->data.size++;
-}
 
 class DisjointSet{
 public:
@@ -365,6 +352,19 @@ public:
             wnode[a] += wnode[b];
             return a;
         }
+
+    private:
+        static HalfEdge* find(HalfEdge* header, size_t index){
+            HalfEdge key;
+            key.data.opposite = index;
+            HalfEdge* result = algo::find(header, &key, node_ptr_compare());
+            return result == header ? nullptr : result;
+        }
+
+        static void insert_halfedge(HalfEdge* header, HalfEdge* edge){
+            algo::insert_equal_upper_bound(header, edge, node_ptr_compare());
+            header->data.size++;
+        }
     };
 
     static constexpr int MAX_DISORDERED_NEIGHBORS = 8;
@@ -393,6 +393,24 @@ public:
         size_t size = 0;
         double merge_size = 0.0;
         Quaternion orientation;
+    };
+
+    // The bonds between each atom and its nearest neighbors, before their disorientations are known.
+    struct NeighborBonds{
+        const std::vector<NeighborBond>& bonds;
+        size_t atoms;
+    };
+
+    // The atoms of the minority phase of each coherent interface rotated onto the parent phase, and the parent of
+    // the FCC/HCP pair.
+    struct CoherentInterfaces{
+        size_t rotatedAtoms;
+        StructureType fccParent;
+    };
+
+    // The bonds once each has its disorientation, sorted by it.
+    struct BondDisorientations{
+        const std::vector<NeighborBond>& bonds;
     };
 
     class InterfaceHandler{
@@ -539,25 +557,7 @@ public:
         }
     }
 
-    void perform(){
-        // Neighbor bonds, coherent interfaces, bond disorientations and the merge sequence, whose
-        // graph clustering runs serially over every atom; the minimum spanning tree is cheaper.
-        ProgressSteps steps({
-            1.0,
-            _handleBoundaries ? 1.0 : 0.0,
-            1.0,
-            _algorithmType == MergeAlgorithm::MinimumSpanningTree ? 1.0 : 5.0
-        });
-        createNeighborBonds();
-        steps.next("Rotating coherent interface atoms");
-        rotateInterfaceAtoms();
-        steps.next("Computing bond disorientations");
-        computeDisorientationAngles();
-        steps.next("Determining the grain merge sequence");
-        determineMergeSequence();
-
-        _positions.reset();
-    }
+    void perform(GrainSegmentationLog& log);
 
     const std::vector<DendrogramNode>& dendrogram() const{
         return _dendrogram;
@@ -583,83 +583,16 @@ public:
         return _neighborBonds;
     }
 
+    // Whether the bond is an edge of the graph the merge sequence clusters.
+    bool joinsMergeGraph(const NeighborBond& bond) const{
+        return isCrystallineBond(bond) && bond.disorientation < _misorientationThresholdDeg;
+    }
+
+    static constexpr double misorientationThresholdDeg(){
+        return _misorientationThresholdDeg;
+    }
+
 private:
-    static inline Matrix3 quaternionToMatrix(const Quaternion& q){
-        double w = q.w();
-        double x = q.x();
-        double y = q.y();
-        double z = q.z();
-        Matrix3 R;
-
-        R(0, 0)= 1 - 2 * (y * y+ z * z); 
-        R(0, 1)= 2 * (x * y - w * z); 
-        R(0, 2)= 2 * (x * z + w * y);
-        R(1, 0)= 2 * (x * y + w * z);  
-        R(1, 1)= 1 - 2 * (x * x + z * z); 
-        R(1, 2)= 2 * (y * z - w * x);
-        R(2, 0)= 2 * (x * z - w * y);
-        R(2, 1)= 2 * (y * z + w * x);
-        R(2, 2)= 1 - 2 * (x * x + y * y);
-        return R;
-    }
-
-    static inline Quaternion quaternionFromMatrix(const Matrix3& R){
-        double tr = R(0, 0) + R(1, 1) + R(2, 2);
-        double qw, qx, qy, qz;
-
-        if(tr > 0){
-            double S = std::sqrt(tr + 1.0) * 2.0;
-            qw = 0.25 * S; 
-            qx = (R(2, 1) - R(1, 2)) / S; 
-            qy = (R(0, 2) - R(2, 0)) / S; 
-            qz = (R(1, 0) - R(0, 1)) / S;
-        }else if(R(0, 0) > R(1, 1) && R(0, 0) > R(2, 2)){
-            double S = std::sqrt(1.0 + R(0, 0) - R(1, 1) - R(2, 2)) * 2.0;
-            qw = (R(2, 1) - R(1, 2)) / S; 
-            qx = 0.25 * S; 
-            qy = (R(0, 1) + R(1, 0)) / S; 
-            qz = (R(0, 2) + R(2, 0)) / S;
-        }else if(R(1, 1) > R(2, 2)){
-            double S = std::sqrt(1.0 + R(1, 1) - R(0, 0) - R(2, 2)) * 2.0;
-            qw = (R(0, 2) - R(2, 0)) / S; 
-            qx = (R(0, 1) + R(1, 0)) / S; 
-            qy = 0.25 * S; 
-            qz = (R(1, 2) + R(2, 1)) / S;
-        }else{
-            double S = std::sqrt(1.0 + R(2, 2) - R(0, 0) - R(1, 1)) * 2.0;
-            qw = (R(1, 0) - R(0, 1)) / S; 
-            qx = (R(0, 2) + R(2, 0)) / S; 
-            qy = (R(1, 2) + R(2, 1)) / S; 
-            qz = 0.25 * S;
-        }
-        
-        Quaternion q(qx, qy, qz, qw); 
-        q.normalize();
-        
-        return q;
-    }
-
-    static inline double rotationAngleDeg(const Matrix3& R){
-        double tr = R(0, 0) + R(1, 1) + R(2, 2);
-        double c = 0.5 * (tr - 1.0);
-        if(c > 1.0) c = 1.0;
-        if(c < -1.0) c= -1.0;
-        return std::acos(c) * 180.0 / std::numbers::pi_v<double>;
-    }
-
-    static double mapAndAccumulateMisorientationDeg(StructureType st, Quaternion& qa_sum, const Quaternion& qb_sum){
-        if(st == StructureType::OTHER){
-            return std::numeric_limits<double>::infinity();
-        }
-
-        double ang_deg = PTM::calculateDisorientation(st, st, qa_sum.normalized(), qb_sum.normalized());
-        qa_sum.w() += qb_sum.w();
-        qa_sum.x() += qb_sum.x();
-        qa_sum.y() += qb_sum.y();
-        qa_sum.z() += qb_sum.z();
-        return ang_deg;
-    }
-
     static inline double calculateGraphWeight(double theta_deg){
         if(theta_deg < 1e-5){
             theta_deg = 0.0;
@@ -680,9 +613,10 @@ private:
 
 private:
     void createNeighborBonds(){
-        const Stopwatch timer;
-        // Finding each atom's nearest neighbors, then turning them into bonds.
-        ProgressSteps steps({1.0, 1.0});
+        ProgressSteps steps({
+            {"Finding nearest neighbors", 1.0},
+            {"Building neighbor bonds", 1.0},
+        });
         PTM neighFinder;
         if(!neighFinder.prepare(_positions->constDataPoint3(), _numParticles, _simCell)){
             throw std::runtime_error("Error trying to prepare PTM neighbor finder.");
@@ -736,7 +670,6 @@ private:
         tlsBonds.combine_each([&](const std::vector<NeighborBond>& v){
             _neighborBonds.insert(_neighborBonds.end(), v.begin(), v.end());
         });
-        spdlog::info("  Neighbor bonds: {} bonds between {} atoms in {}", _neighborBonds.size(), _numParticles, timer.elapsed());
     }
 
     bool interface_cubic_hex(NeighborBond& bond, const InterfaceHandler& iface, Quaternion& outRot){
@@ -758,11 +691,9 @@ private:
         return mis < _misorientationThresholdDeg;
     }
 
-    void rotateInterfaceAtoms(){
-        if(!_handleBoundaries) return;
+    CoherentInterfaces rotateInterfaceAtoms(){
         if(_neighborBonds.empty()) createNeighborBonds();
 
-        const Stopwatch timer;
         InterfaceHandler iface(_structuresProperty);
 
         PTM neighFinder;
@@ -814,8 +745,7 @@ private:
                 }
             }
         }
-        spdlog::info("  Coherent interfaces: rotated {} atoms onto their parent phase (FCC/HCP parent {}) in {}",
-            rotatedAtoms, structureTypeName(iface.parent_phase(StructureType::FCC)), timer.elapsed());
+        return {rotatedAtoms, iface.parent_phase(StructureType::FCC)};
     }
 
     bool isCrystallineBond(const NeighborBond& b) const{
@@ -834,7 +764,6 @@ private:
 
     void computeDisorientationAngles(){
         if(_neighborBonds.empty()) createNeighborBonds();
-        const Stopwatch timer;
         const size_t N = _neighborBonds.size();
 
         InterfaceHandler iface(_structuresProperty);
@@ -873,7 +802,6 @@ private:
             if(x.a != y.a) return x.a < y.a;
             return x.b < y.b;
         });
-        spdlog::info("  Disorientations: {} bonds computed and sorted in {}", N, timer.elapsed());
     }
 
     double calculate_disorientation(int structureType, Quaternion& qa, const Quaternion& qb){
@@ -971,19 +899,15 @@ private:
     }
 
     void determineMergeSequence(){
-        const Stopwatch timer;
         Graph graph(_numParticles, _neighborBonds.size());
-        size_t graphEdges = 0;
         if(_algorithmType == MergeAlgorithm::GraphClusteringAutomatic || _algorithmType == MergeAlgorithm::GraphClusteringManual){
             for(auto edge : _neighborBonds){
-                if(isCrystallineBond(edge) && edge.disorientation < _misorientationThresholdDeg){
+                if(joinsMergeGraph(edge)){
                     double weight = calculateGraphWeight(edge.disorientation);
                     graph.add_edge(edge.a, edge.b, weight);
-                    ++graphEdges;
                 }
             }
         }
-        const size_t graphNodes = graph.num_nodes();
 
         std::vector<Quaternion> qsum(_adjustedOrientations.cbegin(), _adjustedOrientations.cend());
         DisjointSet uf(_numParticles);
@@ -1051,11 +975,6 @@ private:
                     logMergeDistanceArray.push_back(regressor.ys[i]);
                 }
             }
-            spdlog::info("  Merge sequence: {} merges from graph clustering of {} atoms over {} bonds below {} degrees in {}",
-                _dendrogram.size(), graphNodes, graphEdges, _misorientationThresholdDeg, timer.elapsed());
-        }else{
-            spdlog::info("  Merge sequence: {} merges from the minimum spanning tree of bonds below {} degrees in {}",
-                _dendrogram.size(), _misorientationThresholdDeg, timer.elapsed());
         }
     }
 
@@ -1109,108 +1028,22 @@ public:
         _atomClusters = std::make_shared<ParticleProperty>(_numParticles, DataType::Int, 1, 0, false);
     }
 
-    void perform(){
-        if(!_engine1) return;
+    // The merges up to the merging threshold of the dendrogram applied, out of all its merges; the threshold as
+    // the line names it (in degrees for the minimum spanning tree).
+    struct MergesApplied{
+        size_t applied;
+        size_t merges;
+        MergeAlgorithm algorithm;
+        double threshold;
+    };
 
-        const auto& dendro = _engine1->dendrogram();
+    // The atoms of no grain that joined a neighboring one, out of the atoms of no grain.
+    struct OrphanAdoption{
+        size_t adoptedAtoms;
+        size_t orphanAtoms;
+    };
 
-        double thr = _mergingThreshold;
-        if(_engine1->algorithmType() == MergeAlgorithm::GraphClusteringAutomatic){
-            thr = _engine1->suggestedMergingThreshold();
-        }
-        if(_engine1->algorithmType() == MergeAlgorithm::MinimumSpanningTree){
-            thr = std::log(thr);
-        }
-
-        DisjointSet uf(_numParticles);
-        std::vector<Quaternion> meanQ(_engine1->orientationsProperty()->size());
-        const double* qptr = _engine1->orientationsProperty()->dataDouble();
-
-        for(size_t i = 0; i < _numParticles; ++i){
-            meanQ[i] = Quaternion(qptr[4 * i + 0], qptr[4 * i + 1], qptr[4 * i + 2], qptr[4 * i + 3]);
-        }
-
-        size_t appliedMerges = 0;
-        for(const auto& node : dendro){
-            double logD = std::log(node.distance);
-            if(logD > thr) break;
-            uf.merge(node.a, node.b);
-            size_t p = uf.find(node.a);
-            meanQ[p] = node.orientation;
-            ++appliedMerges;
-        }
-        if(_engine1->algorithmType() == MergeAlgorithm::MinimumSpanningTree){
-            spdlog::info("  Applied {} of {} merges with disorientation up to {} degrees",
-                appliedMerges, dendro.size(), _mergingThreshold);
-        }else{
-            spdlog::info("  Applied {} of {} merges up to merging threshold {:.4f} ({})",
-                appliedMerges, dendro.size(), thr,
-                _engine1->algorithmType() == MergeAlgorithm::GraphClusteringAutomatic ? "suggested" : "manual");
-        }
-
-        std::vector<size_t> rep2id(_numParticles, 0);
-        size_t nextId = 1;
-        for(size_t i = 0; i < _numParticles; ++i){
-            if(uf.find(i) == i){
-                if(uf.nodesize(i) < _minGrainAtomCount || _engine1->structuresProperty()->getInt(i) == (int)StructureType::OTHER){
-                    rep2id[i] = 0;
-                }else{
-                    rep2id[i] = nextId++;
-                }
-            }
-        }
-
-        for(size_t i = 0; i < _numParticles; ++i){
-            size_t rep = uf.find(i);
-            _atomClusters->setInt(i, (int) rep2id[rep]);
-        }
-
-        _grainCount = nextId - 1;
-        _grains.clear();
-        _grains.reserve(_grainCount);
-
-        for(size_t rep = 0; rep < _numParticles; ++rep){
-            if(uf.find(rep) == rep){
-                int gid = (int) rep2id[rep];
-                if(gid > 0){
-                    Quaternion q = meanQ[rep].normalized();
-                    int st = _engine1->structuresProperty()->getInt(rep);
-                    _grains.emplace_back(GrainInfo{gid, uf.nodesize(rep), q, st});
-                }
-            }
-        }
-
-        if(_grainCount >= 1){
-            std::vector<size_t> mapping(_grainCount);
-            std::iota(mapping.begin(), mapping.end(), size_t(0));
-            std::sort(mapping.begin(), mapping.end(), [&](size_t a, size_t b){
-                return _grains[a].size > _grains[b].size;
-            });
-
-            std::vector<GrainInfo> reordered;
-            reordered.reserve(_grainCount);
-            for(size_t p = 0; p < _grainCount; ++p){
-                GrainInfo g = _grains[mapping[p]];
-                g.id = (int)(p + 1);
-                reordered.push_back(g);
-            }
-            _grains = std::move(reordered);
-
-            std::vector<size_t> inverseMapping(_grainCount + 1);
-            inverseMapping[0] = 0;
-            for(size_t i = 1; i <= _grainCount; ++i){
-                inverseMapping[mapping[i - 1] + 1] = i;
-            }
-
-            for(size_t i = 0; i < _numParticles; ++i){
-                size_t oldId = (size_t) _atomClusters->getInt(i);
-                _atomClusters->setInt(i, (int) inverseMapping[oldId]);
-            }
-
-            if(_adoptOrphanAtoms)
-                mergeOrphanAtoms();
-        }
-    }
+    void perform(GrainSegmentationLog& log);
 
     size_t grainCount() const{
         return _grainCount;
@@ -1222,6 +1055,18 @@ public:
 
     std::shared_ptr<ParticleProperty> atomClusters() const{
         return _atomClusters;
+    }
+
+    size_t atomCount() const{
+        return _numParticles;
+    }
+
+    size_t minGrainAtomCount() const{
+        return _minGrainAtomCount;
+    }
+
+    bool adoptsOrphanAtoms() const{
+        return _adoptOrphanAtoms;
     }
 
 private:
@@ -1237,9 +1082,8 @@ private:
         }
     };
 
-    void mergeOrphanAtoms(){
+    OrphanAdoption mergeOrphanAtoms(){
         using NeighborBond = GrainSegmentationEngine1::NeighborBond;
-        const Stopwatch timer;
         size_t orphanAtoms = _numParticles;
         for(const auto& grain : _grains){
             orphanAtoms -= grain.size;
@@ -1300,8 +1144,7 @@ private:
                 pq.push({ node.cluster, neighborIndex, node.length + bond.length });
             }
         }
-        spdlog::info("  Orphan adoption: {} of {} unassigned atoms joined a neighboring grain in {}",
-            adoptedAtoms, orphanAtoms, timer.elapsed());
+        return {adoptedAtoms, orphanAtoms};
     }
 
     std::shared_ptr<const GrainSegmentationEngine1> _engine1;

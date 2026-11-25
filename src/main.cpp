@@ -1,161 +1,40 @@
-#include <volt/cli/common.h>
-#include <volt/core/progress.h>
+#include <volt/plugin/plugin_entry.h>
 #include <volt/grain_segmentation_service.h>
-#include <volt/plugin/option_reader.h>
-#include <oneapi/tbb/global_control.h>
-#include <tbb/info.h>
-
-#include <algorithm>
-#include <fstream>
-#include <set>
 
 using namespace Volt;
-using namespace Volt::CLI;
 using namespace Volt::Plugin;
+using S = GrainSegmentationService;
 
-static PluginDescriptor buildDescriptor() {
-    return {
-        "grain-segmentation",
-        "Grain Segmentation",
-        {
-            {"--rmsd", "float", "RMSD threshold for PTM.", "0.1", {}, ""},
-            {"--minGrainAtomCount", "int", "Minimum atoms per grain.", "100", {}, ""},
-            {"--adoptOrphanAtoms", "bool", "Adopt orphan atoms.", "true", {}, ""},
-            {"--handleCoherentInterfaces", "bool", "Handle coherent interfaces.", "true", {}, ""},
-            {"--mergeAlgorithm", "enum", "Grain merge algorithm.", "GraphClusteringAutomatic",
-             {"GraphClusteringAutomatic", "GraphClusteringManual", "MinimumSpanningTree"}, ""},
-            {"--mergingThreshold", "float", "Merge threshold (used by Manual/MST modes).", "0", {}, ""},
-            {"--outputBonds", "bool", "Output neighbor bonds.", "false", {}, ""},
-        }
-    };
-}
-
-int main(int argc, char* argv[]) {
-    const PluginDescriptor descriptor = buildDescriptor();
-
-    if (argc < 2) {
-        showPluginUsage(argv[0], descriptor);
-        return 1;
-    }
-
-    std::string filename, outputBase;
-    auto opts = parseArgs(argc, argv, filename, outputBase);
-
-    if (auto exitCode = handleIntrospection(argv[0], descriptor, opts, filename)) {
-        return *exitCode;
-    }
-
-    if (!hasOption(opts, "--threads")) {
-        const int maxAvailableThreads = static_cast<int>(oneapi::tbb::info::default_concurrency());
-        int physicalCores = 0;
-        std::ifstream cpuinfo("/proc/cpuinfo");
-        if (cpuinfo.is_open()) {
-            std::set<std::pair<int, int>> physicalCoreIds;
-            int fallbackCpuCores = 0;
-            int physicalId = -1;
-            int coreId = -1;
-            std::string line;
-            while (std::getline(cpuinfo, line)) {
-                if (line.empty()) {
-                    if (physicalId >= 0 && coreId >= 0) {
-                        physicalCoreIds.emplace(physicalId, coreId);
-                    }
-                    physicalId = -1;
-                    coreId = -1;
-                    continue;
-                }
-                if (line.rfind("physical id", 0) == 0) {
-                    physicalId = std::stoi(line.substr(line.find(':') + 1));
-                } else if (line.rfind("core id", 0) == 0) {
-                    coreId = std::stoi(line.substr(line.find(':') + 1));
-                } else if (line.rfind("cpu cores", 0) == 0) {
-                    fallbackCpuCores = std::max(fallbackCpuCores, std::stoi(line.substr(line.find(':') + 1)));
-                }
+static const std::vector<OptionBinding<S>> bindings = {
+    opt("--rmsd", "RMSD threshold for PTM.", 0.1f, &S::setRMSD),
+    opt("--minGrainAtomCount", "Minimum atoms per grain.", 100, &S::setMinGrainAtomCount),
+    opt("--adoptOrphanAtoms", "Adopt orphan atoms.", true, &S::setAdoptOrphanAtoms),
+    opt("--handleCoherentInterfaces", "Handle coherent interfaces.", true, &S::setHandleCoherentInterfaces),
+    opt({"--mergeAlgorithm", "enum", "Grain merge algorithm.", "GraphClusteringAutomatic",
+         {"GraphClusteringAutomatic", "GraphClusteringManual", "MinimumSpanningTree"}, ""},
+        std::function<void(S&, const OptsMap&)>([](S& s, const OptsMap& opts) {
+            const std::string name = CLI::getString(opts, "--mergeAlgorithm", "GraphClusteringAutomatic");
+            MergeAlgorithm algorithm = MergeAlgorithm::GraphClusteringAutomatic;
+            if (name == "GraphClusteringManual") {
+                algorithm = MergeAlgorithm::GraphClusteringManual;
+            } else if (name == "MinimumSpanningTree") {
+                algorithm = MergeAlgorithm::MinimumSpanningTree;
+            } else if (name != "GraphClusteringAutomatic") {
+                spdlog::warn("Unknown mergeAlgorithm '{}', defaulting to GraphClusteringAutomatic", name);
             }
-            if (physicalId >= 0 && coreId >= 0) {
-                physicalCoreIds.emplace(physicalId, coreId);
-            }
-            physicalCores = !physicalCoreIds.empty()
-                ? static_cast<int>(physicalCoreIds.size())
-                : fallbackCpuCores;
-        }
-        int defaultThreads = maxAvailableThreads;
-        if (physicalCores > 0) {
-            defaultThreads = std::min(maxAvailableThreads, physicalCores);
-        }
-        opts["--threads"] = std::to_string(std::max(1, defaultThreads));
-    }
+            s.setMergeAlgorithm(algorithm);
+        })),
+    opt({"--mergingThreshold", "float", "Merge threshold (used by Manual/MST modes).", "0", {}, ""},
+        std::function<void(S&, const OptsMap&)>([](S& s, const OptsMap& opts) {
+            s.setMergingThreshold(CLI::getDouble(opts, "--mergingThreshold", 0.0));
+        })),
+    opt("--outputBonds", "Output neighbor bonds.", false, &S::setOutputBonds),
+};
 
-    const int requestedThreads = getInt(opts, "--threads");
-    oneapi::tbb::global_control parallelControl(
-        oneapi::tbb::global_control::max_allowed_parallelism,
-        static_cast<std::size_t>(std::max(1, requestedThreads))
-    );
-    initLogging("grain-segmentation");
-    const Stopwatch runTimer;
-    spdlog::info("Using {} threads (OneTBB)", requestedThreads);
-    // Reading the input, then the analysis, the steps pluginMain takes for every other plugin.
-    JobProgress& progress = JobProgress::instance();
-    progress.beginInput();
-    
-    LammpsParser::Frame frame;
-    if (!parseFrame(filename, frame)) return 1;
-    
-    outputBase = deriveOutputBase(filename, outputBase);
-    spdlog::info("Output base: {}", outputBase);
-    
-    const OptionReader options(descriptor, opts);
-
-    bool adoptOrphanAtoms = options.boolean("--adoptOrphanAtoms");
-    int minGrainAtomCount = options.integer("--minGrainAtomCount");
-    bool handleCoherentInterfaces = options.boolean("--handleCoherentInterfaces");
-    bool outputBonds = options.boolean("--outputBonds");
-
-    const std::string mergeAlgorithmStr = options.text("--mergeAlgorithm");
-    MergeAlgorithm mergeAlgorithm = MergeAlgorithm::GraphClusteringAutomatic;
-    if(mergeAlgorithmStr == "GraphClusteringManual"){
-        mergeAlgorithm = MergeAlgorithm::GraphClusteringManual;
-    }else if(mergeAlgorithmStr == "MinimumSpanningTree"){
-        mergeAlgorithm = MergeAlgorithm::MinimumSpanningTree;
-    }else if(mergeAlgorithmStr != "GraphClusteringAutomatic"){
-        spdlog::warn("Unknown mergeAlgorithm '{}', defaulting to GraphClusteringAutomatic", mergeAlgorithmStr);
-    }
-    double mergingThreshold = options.number("--mergingThreshold");
-    const double rmsd = options.number("--rmsd");
-
-    spdlog::info(
-        "Parameters: rmsd={}, minGrainAtomCount={}, adoptOrphanAtoms={}, handleCoherentInterfaces={}, "
-        "mergeAlgorithm={}, mergingThreshold={}, outputBonds={}",
-        rmsd, minGrainAtomCount, adoptOrphanAtoms, handleCoherentInterfaces,
-        mergeAlgorithmName(mergeAlgorithm), mergingThreshold, outputBonds
-    );
-
-    GrainSegmentationService analyzer;
-    analyzer.setRMSD(rmsd);
-    analyzer.setParameters(
-        adoptOrphanAtoms,
-        minGrainAtomCount,
-        handleCoherentInterfaces,
-        outputBonds,
-        mergeAlgorithm,
-        mergingThreshold
-    );
-    
-    spdlog::info("Starting grain segmentation...");
-    progress.beginAnalysis(descriptor.description);
-    // The analysis throws on bad input; report it as the failure it is instead of aborting.
-    json result;
-    try {
-        result = analyzer.compute(frame, outputBase);
-    } catch (const std::exception& error) {
-        result = json{{"is_failed", true}, {"error", error.what()}};
-    }
-    
-    if (result.value("is_failed", false)) {
-        spdlog::error("Analysis failed after {}: {}", runTimer.elapsed(), result.value("error", "Unknown error"));
-        return 1;
-    }
-    spdlog::info("Grain Segmentation completed in {}.", runTimer.elapsed());
-    progress.finish();
-    return 0;
-}
+VOLT_PLUGIN_MAIN((PluginDescriptor{
+        .name = "grain-segmentation",
+        .description = "Grain Segmentation",
+        .options = optionsMeta(bindings),
+        .defaultThreads = DefaultThreads::PhysicalCores,
+    }),
+    serviceRun(bindings))
