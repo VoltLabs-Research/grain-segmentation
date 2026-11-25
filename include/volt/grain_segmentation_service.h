@@ -9,6 +9,7 @@
 #include <volt/analysis/structure_analysis_context.h>
 #include <volt/analysis/ptm_structure_analysis.h>
 #include <volt/grain_segmentation_engine.h>
+#include <ptm_constants.h>
 #include <string>
 #include <vector>
 
@@ -35,6 +36,9 @@ public:
     );
 
 private:
+    static constexpr int kSearchedPtmStructures =
+        PTM_CHECK_SC | PTM_CHECK_FCC | PTM_CHECK_HCP | PTM_CHECK_ICO | PTM_CHECK_BCC;
+
     float _rmsd;
 
     bool _adoptOrphanAtoms;
