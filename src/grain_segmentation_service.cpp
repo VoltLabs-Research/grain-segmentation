@@ -228,17 +228,10 @@ json GrainSegmentationService::grainTable(
         grainInfo["size"] = grain.size;
         grainInfo["structure_type"] = grain.structureType;
         grainInfo["structure_name"] = StructureIdentificationExport::structureTypeNameForExport(grain.structureType);
-        grainInfo["orientation"] = {
-            grain.orientation.x(),
-            grain.orientation.y(),
-            grain.orientation.z(),
-            grain.orientation.w()
-        };
+        grainInfo["orientation"] = grain.orientation;
         if(grainAtomCount.count(grain.id) && grainAtomCount[grain.id] > 0){
             int cnt = grainAtomCount[grain.id];
-            Point3 com = grainReference[grain.id] + (grainOffsetSum[grain.id] / cnt);
-            com = cell.wrapPoint(com);
-            grainInfo["pos"] = { com.x(), com.y(), com.z() };
+            grainInfo["pos"] = cell.wrapPoint(grainReference[grain.id] + (grainOffsetSum[grain.id] / cnt));
         } else {
             grainInfo["pos"] = {0.0, 0.0, 0.0};
         }
@@ -268,9 +261,8 @@ json GrainSegmentationService::atomsByStructure(
     return StructureIdentificationExport::atomsByStructureTable(frame, structures, [&](json& atom, std::size_t atomIndex){
         structureProgress.update(++serializedAtoms);
         const PtmLocalAtomState& state = ptmStates[atomIndex];
-        const Quaternion q = state.orientation.normalized();
         atom["grain_id"] = grainIds[atomIndex];
-        atom["orientation"] = {q.x(), q.y(), q.z(), q.w()};
+        atom["orientation"] = state.orientation.normalized();
         atom["ptm_valid"] = state.valid;
         if(state.valid){
             atom["rmsd"] = state.rmsd;
@@ -292,14 +284,13 @@ json GrainSegmentationService::perAtomProperties(
         const int raw = structureTypes[i];
         const int st = (0 <= raw && raw < K) ? raw : 0;
         const PtmLocalAtomState& state = ptmStates[i];
-        const Quaternion q = state.orientation.normalized();
         const int grainId = grainIds[i];
         json p = {
             {"id", frame.ids[i]},
             {"structure_id", st},
             {"structure_name", StructureIdentificationExport::structureTypeNameForExport(st)},
             {"grain_id", grainId},
-            {"orientation", {q.x(), q.y(), q.z(), q.w()}},
+            {"orientation", state.orientation.normalized()},
             {"ptm_valid", state.valid}
         };
         if(state.valid){
