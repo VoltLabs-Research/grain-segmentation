@@ -84,7 +84,7 @@ json GrainSegmentationService::compute(const LammpsParser::Frame &frame, const s
         {"Identifying local structures with PTM", 1.0},
         {"Segmenting grains", 8.0},
     });
-    determineLocalStructuresWithPTM(*structureAnalysis, _rmsd, ptmStates, nullptr, 0.0, kSearchedPtmStructures);
+    determineLocalStructuresWithPTM(*structureAnalysis, _rmsd, ptmStates, nullptr, kSearchedPtmStructures);
     computeMaximumNeighborDistanceFromPTM(*structureAnalysis);
     log.dump(*structureAnalysis);
 
